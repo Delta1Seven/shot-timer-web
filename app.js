@@ -131,8 +131,39 @@ async function startTimer() {
 
   startTime = performance.now();
   statusEl.textContent = "GO!";
+  await playGoBeep();
 
   detectShots();
+}
+
+async function playGoBeep() {
+  if (!audioContext) return;
+  if (audioContext.state === "suspended") {
+    await audioContext.resume();
+  }
+
+  const oscillator = audioContext.createOscillator();
+  const gainNode = audioContext.createGain();
+  const now = audioContext.currentTime;
+  const duration = 0.1;
+
+  oscillator.type = "square";
+  oscillator.frequency.setValueAtTime(1200, now);
+
+  gainNode.gain.setValueAtTime(0, now);
+  gainNode.gain.linearRampToValueAtTime(0.25, now + 0.005);
+  gainNode.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+  oscillator.connect(gainNode);
+  gainNode.connect(audioContext.destination);
+
+  oscillator.start(now);
+  oscillator.stop(now + duration);
+
+  oscillator.onended = () => {
+    oscillator.disconnect();
+    gainNode.disconnect();
+  };
 }
 
 function detectShots() {
