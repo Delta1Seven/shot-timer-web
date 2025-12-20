@@ -1,47 +1,34 @@
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.2.0";
 
 let audioContext;
 let analyser;
 let mic;
 let dataArray;
-let detectionRafId;
+let processingRafId;
 let visualizationRafId;
 let delayTimeoutId;
 let parTimeoutId;
 let shotFlashTimeoutId;
 
-let samplePeaks = [];
-let averagePeak = null;
-let peakHistory = [];
-let latestPeak = 0;
-
 let startTime = 0;
 let shots = [];
-let lastShotTime = -Infinity;
 let shotCount = 0;
-let envelope = 0;
-let lastEnvelope = 0;
-let noiseFloor = 0;
-
-let sampleShotCount = 0;
-let sampleStartTime = 0;
-let sampleBaseline = 0;
 
 const SHOT_COOLDOWN_MS = 160;
-const SAMPLE_SHOTS_NEEDED = 4;
-const SAMPLE_BASELINE_MS = 500;
-const PEAK_HISTORY_LENGTH = 120;
 const DEFAULT_DELAY_MIN = 1;
 const DEFAULT_DELAY_MAX = 4;
 const DEFAULT_FIXED_DELAY = 2;
 const MIN_DELAY_SECONDS = 1;
 const MAX_DELAY_SECONDS = 4;
-const ENVELOPE_ATTACK = 0.55;
-const ENVELOPE_DECAY = 0.72;
-const NOISE_FLOOR_ALPHA = 0.08;
-const NOISE_MULTIPLIER = 2.8;
-const IMPULSE_RISE_THRESHOLD = 6;
-const SHOT_FLASH_MS = 160;
+const HISTORY_LENGTH = 180;
+const AMPLITUDE_SMOOTHING = 0.2;
+const AUTO_GAIN_TARGET = 0.7;
+const AUTO_GAIN_SMOOTHING = 0.08;
+const AUTO_GAIN_LERP = 0.2;
+const AUTO_GAIN_MIN = 1;
+const AUTO_GAIN_MAX = 8;
+const CROSSING_FLASH_MS = 120;
+const SHOT_FLASH_MS = 180;
 
 const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
@@ -59,6 +46,24 @@ const listeningIndicator = document.getElementById("indicatorListening");
 const beepIndicator = document.getElementById("indicatorBeep");
 const shotIndicator = document.getElementById("indicatorShot");
 
+const audioState = {
+  rawLevel: 0,
+  smoothedLevel: 0,
+  normalizedLevel: 0,
+  autoGainLevel: 0,
+  autoGain: 1,
+  history: [],
+  isAboveThreshold: false,
+  crossingPulseUntil: 0,
+  lastCrossingLevel: 0,
+  shotPulseUntil: 0,
+};
+
+const shotDetector = {
+  isActive: false,
+  lastShotTime: -Infinity,
+};
+
 resizeWaveformCanvas();
 window.addEventListener("resize", resizeWaveformCanvas);
 
@@ -71,6 +76,10 @@ minDelayEl.addEventListener("input", clampDelayInputs);
 maxDelayEl.addEventListener("input", clampDelayInputs);
 
 updateDelayControls();
+
+sensitivityEl.addEventListener("input", () => {
+  audioState.isAboveThreshold = false;
+});
 
 document.getElementById("sampleBtn").onclick = recordSamples;
 document.getElementById("startBtn").onclick = startTimer;
@@ -103,52 +112,39 @@ async function initAudio() {
   silentGain.gain.value = 0;
   analyser.connect(silentGain);
   silentGain.connect(audioContext.destination);
+  startProcessing();
   startVisualization();
 }
 
 async function recordSamples() {
   await initAudio();
   resetDetectionState();
-  samplePeaks = [];
-  averagePeak = null;
-  sampleShotCount = 0;
-  sampleStartTime = performance.now();
-  sampleBaseline = 0;
 
-  statusEl.textContent = `Recording samples... (0/${SAMPLE_SHOTS_NEEDED})`;
+  statusEl.textContent = "Calibrating ambient level...";
   setIndicatorState({ listening: true, beep: false, shot: false });
-  collectSamples();
-}
 
-function collectSamples() {
-  analyser.getByteTimeDomainData(dataArray);
+  const calibrationStart = performance.now();
+  const calibrationLevels = [];
 
-  const peak = calculatePeak();
-  latestPeak = peak;
-  updateEnvelope(peak);
+  const sample = () => {
+    if (!analyser) return;
+    analyser.getByteTimeDomainData(dataArray);
+    const peak = calculatePeakNormalized(dataArray);
+    calibrationLevels.push(peak);
 
-  samplePeaks.push(peak);
-  const now = performance.now();
-  if (now - sampleStartTime < SAMPLE_BASELINE_MS) {
-    sampleBaseline = samplePeaks.reduce((a, b) => a + b, 0) / samplePeaks.length;
-  } else {
-    const baselineThreshold = Math.max(sampleBaseline * 3, 12);
-    if (peak > baselineThreshold && now - lastShotTime >= SHOT_COOLDOWN_MS) {
-      sampleShotCount += 1;
-      lastShotTime = now;
-      statusEl.textContent = `Recording samples... (${sampleShotCount}/${SAMPLE_SHOTS_NEEDED})`;
+    if (performance.now() - calibrationStart < 600) {
+      requestAnimationFrame(sample);
+      return;
     }
-  }
 
-  if (sampleShotCount >= SAMPLE_SHOTS_NEEDED) {
-    cancelAnimationFrame(detectionRafId);
-    averagePeak = samplePeaks.reduce((a, b) => a + b, 0) / samplePeaks.length;
-    statusEl.textContent = "Sample captured ✔";
+    const averageLevel = calibrationLevels.reduce((sum, value) => sum + value, 0) / calibrationLevels.length;
+    audioState.autoGainLevel = averageLevel;
+    audioState.autoGain = clampNumber(AUTO_GAIN_TARGET / Math.max(averageLevel, 0.02), AUTO_GAIN_MIN, AUTO_GAIN_MAX);
+    statusEl.textContent = "Calibration complete ✔";
     setIndicatorState({ listening: false, beep: false, shot: false });
-    return;
-  }
+  };
 
-  detectionRafId = requestAnimationFrame(collectSamples);
+  sample();
 }
 
 function resizeWaveformCanvas() {
@@ -159,8 +155,64 @@ function resizeWaveformCanvas() {
   waveformCanvas.width = width * dpr;
   waveformCanvas.height = height * dpr;
   waveformCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  waveformCtx.fillStyle = "#000";
+  waveformCtx.fillStyle = "#05070d";
   waveformCtx.fillRect(0, 0, width, height);
+}
+
+function startProcessing() {
+  if (processingRafId) return;
+
+  const process = () => {
+    if (!analyser) {
+      processingRafId = requestAnimationFrame(process);
+      return;
+    }
+
+    analyser.getByteTimeDomainData(dataArray);
+    const rawPeak = calculatePeakNormalized(dataArray);
+    audioState.rawLevel = rawPeak;
+    audioState.smoothedLevel = smoothValue(audioState.smoothedLevel, rawPeak, AMPLITUDE_SMOOTHING);
+
+    audioState.autoGainLevel = smoothValue(audioState.autoGainLevel, audioState.smoothedLevel, AUTO_GAIN_SMOOTHING);
+    const desiredGain = AUTO_GAIN_TARGET / Math.max(audioState.autoGainLevel, 0.02);
+    audioState.autoGain = smoothValue(
+      audioState.autoGain,
+      clampNumber(desiredGain, AUTO_GAIN_MIN, AUTO_GAIN_MAX),
+      AUTO_GAIN_LERP
+    );
+
+    const normalizedLevel = clampNumber(audioState.smoothedLevel * audioState.autoGain, 0, 1);
+    audioState.normalizedLevel = normalizedLevel;
+
+    audioState.history.push(normalizedLevel);
+    if (audioState.history.length > HISTORY_LENGTH) {
+      audioState.history.shift();
+    }
+
+    const threshold = getThreshold();
+    const now = performance.now();
+    const isAbove = normalizedLevel >= threshold;
+
+    if (isAbove && !audioState.isAboveThreshold) {
+      audioState.crossingPulseUntil = now + CROSSING_FLASH_MS;
+      audioState.lastCrossingLevel = normalizedLevel;
+    }
+
+    if (!isAbove) {
+      audioState.isAboveThreshold = false;
+      processingRafId = requestAnimationFrame(process);
+      return;
+    }
+
+    if (shotDetector.isActive && !audioState.isAboveThreshold && now - shotDetector.lastShotTime >= SHOT_COOLDOWN_MS) {
+      registerShot(now);
+    }
+
+    audioState.isAboveThreshold = true;
+    processingRafId = requestAnimationFrame(process);
+  };
+
+  process();
 }
 
 function startVisualization() {
@@ -170,88 +222,89 @@ function startVisualization() {
     const width = waveformCanvas.clientWidth;
     const height = waveformCanvas.clientHeight;
 
-    if (!analyser || width === 0 || height === 0) {
+    if (!width || !height) {
       visualizationRafId = requestAnimationFrame(draw);
       return;
     }
 
-    analyser.getByteTimeDomainData(dataArray);
-    const peak = calculatePeak();
-    latestPeak = peak;
-    peakHistory.push(peak);
-    if (peakHistory.length > PEAK_HISTORY_LENGTH) {
-      peakHistory.shift();
-    }
+    const now = performance.now();
+    const shotPulseActive = now < audioState.shotPulseUntil;
 
-    waveformCtx.fillStyle = "#000";
+    waveformCtx.fillStyle = shotPulseActive ? "#0b1f16" : "#05070d";
     waveformCtx.fillRect(0, 0, width, height);
 
-    const mid = height / 2;
-    const referencePeak = getReferencePeak();
-    if (referencePeak > 0) {
-      const referenceOffset = Math.min(referencePeak, 128) / 128 * mid * 0.9;
-      const referenceY = mid - referenceOffset;
-      waveformCtx.strokeStyle = "#f8fafc";
-      waveformCtx.lineWidth = 1;
-      waveformCtx.beginPath();
-      waveformCtx.moveTo(0, referenceY);
-      waveformCtx.lineTo(width, referenceY);
-      waveformCtx.stroke();
+    drawAmplitudeHistory(width, height);
+    drawThresholdLine(width, height);
+    drawCrossingPulse(width, height);
+
+    if (shotPulseActive) {
+      drawShotPulse(width, height);
     }
 
-    if (peakHistory.length > 1) {
-      waveformCtx.strokeStyle = "#f59e0b";
-      waveformCtx.lineWidth = 1.2;
-      waveformCtx.beginPath();
-      const peakSliceWidth = width / (peakHistory.length - 1);
-      for (let i = 0; i < peakHistory.length; i++) {
-        const peakOffset = Math.min(peakHistory[i], 128) / 128 * mid * 0.9;
-        const y = mid - peakOffset;
-        const x = i * peakSliceWidth;
-        if (i === 0) {
-          waveformCtx.moveTo(x, y);
-        } else {
-          waveformCtx.lineTo(x, y);
-        }
-      }
-      waveformCtx.stroke();
-    }
-
-    waveformCtx.strokeStyle = "#30d158";
-    waveformCtx.lineWidth = 1.5;
-    waveformCtx.beginPath();
-
-    const sliceWidth = width / (dataArray.length - 1);
-    for (let i = 0; i < dataArray.length; i++) {
-      const normalized = (dataArray[i] - 128) / 128;
-      const y = mid + normalized * mid * 0.9;
-      const x = i * sliceWidth;
-      if (i === 0) {
-        waveformCtx.moveTo(x, y);
-      } else {
-        waveformCtx.lineTo(x, y);
-      }
-    }
-    waveformCtx.stroke();
     visualizationRafId = requestAnimationFrame(draw);
   };
 
   draw();
 }
 
-async function startTimer() {
-  if (!averagePeak) {
-    statusEl.textContent = "Record sample shots first";
-    return;
-  }
+function drawAmplitudeHistory(width, height) {
+  const history = audioState.history;
+  if (!history.length) return;
 
+  waveformCtx.strokeStyle = "#22f2e8";
+  waveformCtx.lineWidth = 2;
+  waveformCtx.beginPath();
+
+  const sliceWidth = width / Math.max(history.length - 1, 1);
+  history.forEach((level, index) => {
+    const x = index * sliceWidth;
+    const y = height - level * height;
+    if (index === 0) {
+      waveformCtx.moveTo(x, y);
+    } else {
+      waveformCtx.lineTo(x, y);
+    }
+  });
+
+  waveformCtx.stroke();
+}
+
+function drawThresholdLine(width, height) {
+  const threshold = getThreshold();
+  const y = height - threshold * height;
+
+  waveformCtx.strokeStyle = "#ffffff";
+  waveformCtx.lineWidth = 1.5;
+  waveformCtx.beginPath();
+  waveformCtx.moveTo(0, y);
+  waveformCtx.lineTo(width, y);
+  waveformCtx.stroke();
+}
+
+function drawCrossingPulse(width, height) {
+  if (performance.now() > audioState.crossingPulseUntil) return;
+
+  waveformCtx.fillStyle = "#ffffff";
+  const x = width - 8;
+  const y = height - audioState.lastCrossingLevel * height;
+  waveformCtx.beginPath();
+  waveformCtx.arc(x, y, 4, 0, Math.PI * 2);
+  waveformCtx.fill();
+}
+
+function drawShotPulse(width, height) {
+  waveformCtx.strokeStyle = "#4ade80";
+  waveformCtx.lineWidth = 2.5;
+  waveformCtx.strokeRect(1, 1, width - 2, height - 2);
+}
+
+async function startTimer() {
   await initAudio();
   clearPendingTimers();
   resetDetectionState();
   shots = [];
   resultsEl.textContent = "";
   shotCount = 0;
-  sampleShotCount = 0;
   shotCountEl.textContent = "Shots: 0";
 
   statusEl.textContent = "Stand by...";
@@ -264,7 +317,7 @@ async function startTimer() {
     setIndicatorState({ listening: true, beep: true, shot: false });
     playGoBeep();
     scheduleParBeep();
-    detectShots();
+    shotDetector.isActive = true;
   }, delayMs);
 }
 
@@ -320,74 +373,15 @@ async function playGoBeep(frequency = 1800) {
   };
 }
 
-function detectShots() {
-  analyser.getByteTimeDomainData(dataArray);
-
-  const peak = calculatePeak();
-  latestPeak = peak;
-  updateEnvelope(peak);
-
-  const threshold = getDynamicThreshold();
-  const now = performance.now();
-
-  if (envelope > threshold &&
-      envelope - lastEnvelope > IMPULSE_RISE_THRESHOLD &&
-      now - lastShotTime >= SHOT_COOLDOWN_MS) {
-    const t = (now - startTime) / 1000;
-    shots.push(t);
-    shotCount = shots.length;
-    lastShotTime = now;
-    shotCountEl.textContent = `Shots: ${shotCount}`;
-    updateResults();
-    flashShotIndicator();
-  }
-
-  lastEnvelope = envelope;
-  detectionRafId = requestAnimationFrame(detectShots);
-}
-
-function updateEnvelope(peak) {
-  if (peak > envelope) {
-    envelope += (peak - envelope) * ENVELOPE_ATTACK;
-  } else {
-    envelope *= ENVELOPE_DECAY;
-  }
-
-  if (!noiseFloor || envelope < noiseFloor) {
-    noiseFloor = envelope;
-  }
-  noiseFloor += (envelope - noiseFloor) * NOISE_FLOOR_ALPHA;
-}
-
-function getDynamicThreshold() {
-  const sensitivity = mapSensitivity(Number(sensitivityEl.value));
-  const baseThreshold = averagePeak ? averagePeak * sensitivity : 0;
-  const noiseThreshold = noiseFloor * NOISE_MULTIPLIER;
-  return Math.max(baseThreshold, noiseThreshold, 10);
-}
-
-function mapSensitivity(value) {
-  const clamped = Math.max(0, Math.min(1, value));
-  const curve = Math.pow(clamped, 1.5);
-  return 2.0 - curve * 1.5;
-}
-
-function calculatePeak() {
-  let peak = 0;
-  for (let i = 0; i < dataArray.length; i++) {
-    const v = Math.abs(dataArray[i] - 128);
-    if (v > peak) peak = v;
-  }
-  return peak;
-}
-
-function getReferencePeak() {
-  const sensitivity = Number(sensitivityEl.value);
-  const basePeak = averagePeak
-    ?? (peakHistory.length
-      ? peakHistory.reduce((sum, value) => sum + value, 0) / peakHistory.length
-      : latestPeak);
-  return basePeak * mapSensitivity(sensitivity);
+function registerShot(now) {
+  const elapsed = (now - startTime) / 1000;
+  shots.push(elapsed);
+  shotCount = shots.length;
+  shotDetector.lastShotTime = now;
+  audioState.shotPulseUntil = now + SHOT_FLASH_MS;
+  shotCountEl.textContent = `Shots: ${shotCount}`;
+  updateResults();
+  flashShotIndicator();
 }
 
 function updateResults() {
@@ -412,11 +406,12 @@ function resetTimer() {
 }
 
 function resetDetectionState() {
-  cancelAnimationFrame(detectionRafId);
-  envelope = 0;
-  lastEnvelope = 0;
-  noiseFloor = 0;
-  lastShotTime = -Infinity;
+  shotDetector.isActive = false;
+  shotDetector.lastShotTime = -Infinity;
+  audioState.isAboveThreshold = false;
+  audioState.shotPulseUntil = 0;
+  audioState.crossingPulseUntil = 0;
+  startTime = 0;
 }
 
 function clearPendingTimers() {
@@ -447,6 +442,29 @@ function clampDelayInputs() {
 function clampNumber(value, min, max) {
   if (Number.isNaN(value)) return min;
   return Math.min(Math.max(value, min), max);
+}
+
+function smoothValue(previous, next, factor) {
+  return previous + (next - previous) * factor;
+}
+
+function getSensitivityValue() {
+  return clampNumber(Number(sensitivityEl.value), 0, 1);
+}
+
+function getThreshold() {
+  const sensitivityValue = getSensitivityValue();
+  const normalizedThreshold = 0.1 + (1 - sensitivityValue) * 0.9;
+  return clampNumber(normalizedThreshold, 0.1, 1);
+}
+
+function calculatePeakNormalized(buffer) {
+  let peak = 0;
+  for (let i = 0; i < buffer.length; i++) {
+    const v = Math.abs(buffer[i] - 128);
+    if (v > peak) peak = v;
+  }
+  return peak / 128;
 }
 
 function setIndicatorState({ listening, beep, shot }) {
