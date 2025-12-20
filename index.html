@@ -18,9 +18,50 @@
       <input type="range" id="sensitivity" min="0" max="1" step="0.01" value="0.5" />
     </label>
 
+    <div class="control-group">
+      <span class="control-label">Start Delay</span>
+      <label class="toggle">
+        <input type="checkbox" id="randomDelay" checked />
+        <span>Randomize delay</span>
+      </label>
+      <div class="delay-row">
+        <label class="inline">
+          Min (sec)
+          <input type="number" id="minDelay" min="1" max="4" step="0.1" />
+        </label>
+        <label class="inline">
+          Max (sec)
+          <input type="number" id="maxDelay" min="1" max="4" step="0.1" />
+        </label>
+      </div>
+      <label class="inline">
+        Fixed delay (sec)
+        <input type="number" id="fixedDelay" min="1" max="4" step="0.1" />
+      </label>
+    </div>
+
+    <div class="control-group">
+      <span class="control-label">Par Time</span>
+      <label class="toggle">
+        <input type="checkbox" id="parEnabled" />
+        <span>Enable par beep</span>
+      </label>
+      <label class="inline">
+        Par time (sec)
+        <input type="number" id="parTime" min="0" max="30" step="0.1" value="3" />
+      </label>
+    </div>
+
     <canvas id="waveform" aria-label="Live audio waveform"></canvas>
 
+    <div class="indicators">
+      <div class="indicator" id="indicatorListening">Listening</div>
+      <div class="indicator" id="indicatorBeep">Beep</div>
+      <div class="indicator" id="indicatorShot">Shot</div>
+    </div>
+
     <button id="startBtn">Start Timer</button>
+    <button id="resetBtn" class="secondary">Reset</button>
 
     <div id="status">Idle</div>
     <div id="shotCount">Shots: 0</div>

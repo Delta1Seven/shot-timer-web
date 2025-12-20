@@ -1,11 +1,14 @@
-﻿const APP_VERSION = "1.0.1";
+const APP_VERSION = "1.1.0";
 
 let audioContext;
 let analyser;
 let mic;
 let dataArray;
-let rafId;
+let detectionRafId;
 let visualizationRafId;
+let delayTimeoutId;
+let parTimeoutId;
+let shotFlashTimeoutId;
 
 let samplePeaks = [];
 let averagePeak = null;
@@ -16,15 +19,29 @@ let startTime = 0;
 let shots = [];
 let lastShotTime = -Infinity;
 let shotCount = 0;
+let envelope = 0;
+let lastEnvelope = 0;
+let noiseFloor = 0;
 
 let sampleShotCount = 0;
 let sampleStartTime = 0;
 let sampleBaseline = 0;
 
-const SHOT_COOLDOWN_MS = 150;
+const SHOT_COOLDOWN_MS = 160;
 const SAMPLE_SHOTS_NEEDED = 4;
 const SAMPLE_BASELINE_MS = 500;
 const PEAK_HISTORY_LENGTH = 120;
+const DEFAULT_DELAY_MIN = 1;
+const DEFAULT_DELAY_MAX = 4;
+const DEFAULT_FIXED_DELAY = 2;
+const MIN_DELAY_SECONDS = 1;
+const MAX_DELAY_SECONDS = 4;
+const ENVELOPE_ATTACK = 0.55;
+const ENVELOPE_DECAY = 0.72;
+const NOISE_FLOOR_ALPHA = 0.08;
+const NOISE_MULTIPLIER = 2.8;
+const IMPULSE_RISE_THRESHOLD = 6;
+const SHOT_FLASH_MS = 160;
 
 const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
@@ -32,12 +49,32 @@ const shotCountEl = document.getElementById("shotCount");
 const sensitivityEl = document.getElementById("sensitivity");
 const waveformCanvas = document.getElementById("waveform");
 const waveformCtx = waveformCanvas.getContext("2d");
+const randomDelayEl = document.getElementById("randomDelay");
+const minDelayEl = document.getElementById("minDelay");
+const maxDelayEl = document.getElementById("maxDelay");
+const fixedDelayEl = document.getElementById("fixedDelay");
+const parEnabledEl = document.getElementById("parEnabled");
+const parTimeEl = document.getElementById("parTime");
+const listeningIndicator = document.getElementById("indicatorListening");
+const beepIndicator = document.getElementById("indicatorBeep");
+const shotIndicator = document.getElementById("indicatorShot");
 
 resizeWaveformCanvas();
 window.addEventListener("resize", resizeWaveformCanvas);
 
+minDelayEl.value = DEFAULT_DELAY_MIN;
+maxDelayEl.value = DEFAULT_DELAY_MAX;
+fixedDelayEl.value = DEFAULT_FIXED_DELAY;
+
+randomDelayEl.addEventListener("change", updateDelayControls);
+minDelayEl.addEventListener("input", clampDelayInputs);
+maxDelayEl.addEventListener("input", clampDelayInputs);
+
+updateDelayControls();
+
 document.getElementById("sampleBtn").onclick = recordSamples;
 document.getElementById("startBtn").onclick = startTimer;
+document.getElementById("resetBtn").onclick = resetTimer;
 
 async function initAudio() {
   if (audioContext) return;
@@ -71,14 +108,15 @@ async function initAudio() {
 
 async function recordSamples() {
   await initAudio();
+  resetDetectionState();
   samplePeaks = [];
   averagePeak = null;
   sampleShotCount = 0;
   sampleStartTime = performance.now();
   sampleBaseline = 0;
-  lastShotTime = -Infinity;
 
   statusEl.textContent = `Recording samples... (0/${SAMPLE_SHOTS_NEEDED})`;
+  setIndicatorState({ listening: true, beep: false, shot: false });
   collectSamples();
 }
 
@@ -87,6 +125,7 @@ function collectSamples() {
 
   const peak = calculatePeak();
   latestPeak = peak;
+  updateEnvelope(peak);
 
   samplePeaks.push(peak);
   const now = performance.now();
@@ -102,13 +141,14 @@ function collectSamples() {
   }
 
   if (sampleShotCount >= SAMPLE_SHOTS_NEEDED) {
-    cancelAnimationFrame(rafId);
+    cancelAnimationFrame(detectionRafId);
     averagePeak = samplePeaks.reduce((a, b) => a + b, 0) / samplePeaks.length;
     statusEl.textContent = "Sample captured ✔";
+    setIndicatorState({ listening: false, beep: false, shot: false });
     return;
   }
 
-  rafId = requestAnimationFrame(collectSamples);
+  detectionRafId = requestAnimationFrame(collectSamples);
 }
 
 function resizeWaveformCanvas() {
@@ -205,6 +245,9 @@ async function startTimer() {
     return;
   }
 
+  await initAudio();
+  clearPendingTimers();
+  resetDetectionState();
   shots = [];
   resultsEl.textContent = "";
   shotCount = 0;
@@ -212,17 +255,42 @@ async function startTimer() {
   shotCountEl.textContent = "Shots: 0";
 
   statusEl.textContent = "Stand by...";
-  await new Promise(r => setTimeout(r, 1000 + Math.random() * 2000));
+  setIndicatorState({ listening: true, beep: false, shot: false });
 
-  startTime = performance.now();
-  lastShotTime = -Infinity;
-  statusEl.textContent = "GO!";
-  await playGoBeep();
-
-  detectShots();
+  const delayMs = getStartDelayMs();
+  delayTimeoutId = window.setTimeout(() => {
+    startTime = performance.now();
+    statusEl.textContent = "BEEP!";
+    setIndicatorState({ listening: true, beep: true, shot: false });
+    playGoBeep();
+    scheduleParBeep();
+    detectShots();
+  }, delayMs);
 }
 
-async function playGoBeep() {
+function getStartDelayMs() {
+  const fixedDelaySeconds = clampNumber(Number(fixedDelayEl.value), MIN_DELAY_SECONDS, MAX_DELAY_SECONDS);
+  if (!randomDelayEl.checked) {
+    return fixedDelaySeconds * 1000;
+  }
+
+  const minDelaySeconds = clampNumber(Number(minDelayEl.value), MIN_DELAY_SECONDS, MAX_DELAY_SECONDS);
+  const maxDelaySeconds = clampNumber(Number(maxDelayEl.value), minDelaySeconds, MAX_DELAY_SECONDS);
+  const randomDelay = minDelaySeconds + Math.random() * (maxDelaySeconds - minDelaySeconds);
+  return randomDelay * 1000;
+}
+
+function scheduleParBeep() {
+  if (!parEnabledEl.checked) return;
+  const parSeconds = Math.max(0, Number(parTimeEl.value));
+  if (!parSeconds) return;
+
+  parTimeoutId = window.setTimeout(() => {
+    playGoBeep(1600);
+  }, parSeconds * 1000);
+}
+
+async function playGoBeep(frequency = 1800) {
   if (!audioContext) return;
   if (audioContext.state === "suspended") {
     await audioContext.resume();
@@ -231,13 +299,13 @@ async function playGoBeep() {
   const oscillator = audioContext.createOscillator();
   const gainNode = audioContext.createGain();
   const now = audioContext.currentTime;
-  const duration = 0.1;
+  const duration = 0.08;
 
   oscillator.type = "square";
-  oscillator.frequency.setValueAtTime(1200, now);
+  oscillator.frequency.setValueAtTime(frequency, now);
 
-  gainNode.gain.setValueAtTime(0, now);
-  gainNode.gain.linearRampToValueAtTime(0.25, now + 0.005);
+  gainNode.gain.setValueAtTime(0.0001, now);
+  gainNode.gain.linearRampToValueAtTime(0.32, now + 0.004);
   gainNode.gain.exponentialRampToValueAtTime(0.0001, now + duration);
 
   oscillator.connect(gainNode);
@@ -257,20 +325,45 @@ function detectShots() {
 
   const peak = calculatePeak();
   latestPeak = peak;
+  updateEnvelope(peak);
 
-  const threshold = averagePeak * mapSensitivity(Number(sensitivityEl.value));
-
+  const threshold = getDynamicThreshold();
   const now = performance.now();
-  if (peak > threshold && now - lastShotTime >= SHOT_COOLDOWN_MS) {
-    const t = (performance.now() - startTime) / 1000;
+
+  if (envelope > threshold &&
+      envelope - lastEnvelope > IMPULSE_RISE_THRESHOLD &&
+      now - lastShotTime >= SHOT_COOLDOWN_MS) {
+    const t = (now - startTime) / 1000;
     shots.push(t);
     shotCount = shots.length;
     lastShotTime = now;
     shotCountEl.textContent = `Shots: ${shotCount}`;
     updateResults();
+    flashShotIndicator();
   }
 
-  rafId = requestAnimationFrame(detectShots);
+  lastEnvelope = envelope;
+  detectionRafId = requestAnimationFrame(detectShots);
+}
+
+function updateEnvelope(peak) {
+  if (peak > envelope) {
+    envelope += (peak - envelope) * ENVELOPE_ATTACK;
+  } else {
+    envelope *= ENVELOPE_DECAY;
+  }
+
+  if (!noiseFloor || envelope < noiseFloor) {
+    noiseFloor = envelope;
+  }
+  noiseFloor += (envelope - noiseFloor) * NOISE_FLOOR_ALPHA;
+}
+
+function getDynamicThreshold() {
+  const sensitivity = mapSensitivity(Number(sensitivityEl.value));
+  const baseThreshold = averagePeak ? averagePeak * sensitivity : 0;
+  const noiseThreshold = noiseFloor * NOISE_MULTIPLIER;
+  return Math.max(baseThreshold, noiseThreshold, 10);
 }
 
 function mapSensitivity(value) {
@@ -306,3 +399,79 @@ function updateResults() {
     )
     .join("\n");
 }
+
+function resetTimer() {
+  clearPendingTimers();
+  resetDetectionState();
+  shots = [];
+  shotCount = 0;
+  resultsEl.textContent = "";
+  shotCountEl.textContent = "Shots: 0";
+  statusEl.textContent = "Idle";
+  setIndicatorState({ listening: false, beep: false, shot: false });
+}
+
+function resetDetectionState() {
+  cancelAnimationFrame(detectionRafId);
+  envelope = 0;
+  lastEnvelope = 0;
+  noiseFloor = 0;
+  lastShotTime = -Infinity;
+}
+
+function clearPendingTimers() {
+  if (delayTimeoutId) {
+    clearTimeout(delayTimeoutId);
+    delayTimeoutId = null;
+  }
+  if (parTimeoutId) {
+    clearTimeout(parTimeoutId);
+    parTimeoutId = null;
+  }
+}
+
+function updateDelayControls() {
+  const isRandom = randomDelayEl.checked;
+  minDelayEl.disabled = !isRandom;
+  maxDelayEl.disabled = !isRandom;
+  fixedDelayEl.disabled = isRandom;
+}
+
+function clampDelayInputs() {
+  const minValue = clampNumber(Number(minDelayEl.value), MIN_DELAY_SECONDS, MAX_DELAY_SECONDS);
+  const maxValue = clampNumber(Number(maxDelayEl.value), minValue, MAX_DELAY_SECONDS);
+  minDelayEl.value = minValue;
+  maxDelayEl.value = maxValue;
+}
+
+function clampNumber(value, min, max) {
+  if (Number.isNaN(value)) return min;
+  return Math.min(Math.max(value, min), max);
+}
+
+function setIndicatorState({ listening, beep, shot }) {
+  setIndicator(listeningIndicator, listening);
+  setIndicator(beepIndicator, beep);
+  setIndicator(shotIndicator, shot);
+}
+
+function setIndicator(element, isActive) {
+  element.classList.toggle("active", isActive);
+}
+
+function flashShotIndicator() {
+  setIndicator(shotIndicator, true);
+  if (shotFlashTimeoutId) {
+    clearTimeout(shotFlashTimeoutId);
+  }
+  shotFlashTimeoutId = window.setTimeout(() => {
+    setIndicator(shotIndicator, false);
+  }, SHOT_FLASH_MS);
+}
+
+function updateParControlState() {
+  parTimeEl.disabled = !parEnabledEl.checked;
+}
+
+parEnabledEl.addEventListener("change", updateParControlState);
+updateParControlState();
