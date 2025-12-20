@@ -1,4 +1,6 @@
-﻿let audioContext;
+﻿const APP_VERSION = "1.0.1";
+
+let audioContext;
 let analyser;
 let mic;
 let dataArray;
@@ -10,6 +12,9 @@ let averagePeak = null;
 
 let startTime = 0;
 let shots = [];
+let lastShotTime = -Infinity;
+
+const SHOT_COOLDOWN_MS = 150;
 
 const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
@@ -130,6 +135,7 @@ async function startTimer() {
   await new Promise(r => setTimeout(r, 1000 + Math.random() * 2000));
 
   startTime = performance.now();
+  lastShotTime = -Infinity;
   statusEl.textContent = "GO!";
   await playGoBeep();
 
@@ -177,9 +183,11 @@ function detectShots() {
 
   const threshold = averagePeak * sensitivityEl.value;
 
-  if (peak > threshold) {
+  const now = performance.now();
+  if (peak > threshold && now - lastShotTime >= SHOT_COOLDOWN_MS) {
     const t = (performance.now() - startTime) / 1000;
     shots.push(t);
+    lastShotTime = now;
     updateResults();
   }
 
