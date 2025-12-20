@@ -204,7 +204,7 @@ function startProcessing() {
       return;
     }
 
-    if (shotDetector.isActive && !audioState.isAboveThreshold && now - shotDetector.lastShotTime >= SHOT_COOLDOWN_MS) {
+    if (shotDetector.isActive && now - shotDetector.lastShotTime >= SHOT_COOLDOWN_MS) {
       registerShot(now);
     }
 
