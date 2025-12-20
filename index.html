@@ -15,7 +15,7 @@
 
     <label>
       Sensitivity
-      <input type="range" id="sensitivity" min="0.5" max="2.0" step="0.1" value="1.0" />
+      <input type="range" id="sensitivity" min="0" max="1" step="0.01" value="0.5" />
     </label>
 
     <canvas id="waveform" aria-label="Live audio waveform"></canvas>
@@ -23,6 +23,7 @@
     <button id="startBtn">Start Timer</button>
 
     <div id="status">Idle</div>
+    <div id="shotCount">Shots: 0</div>
     <pre id="results"></pre>
   </div>
 
