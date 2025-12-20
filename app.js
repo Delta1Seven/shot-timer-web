@@ -9,6 +9,8 @@ let visualizationRafId;
 
 let samplePeaks = [];
 let averagePeak = null;
+let peakHistory = [];
+let latestPeak = 0;
 
 let startTime = 0;
 let shots = [];
@@ -22,6 +24,7 @@ let sampleBaseline = 0;
 const SHOT_COOLDOWN_MS = 150;
 const SAMPLE_SHOTS_NEEDED = 4;
 const SAMPLE_BASELINE_MS = 500;
+const PEAK_HISTORY_LENGTH = 120;
 
 const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
@@ -82,11 +85,8 @@ async function recordSamples() {
 function collectSamples() {
   analyser.getByteTimeDomainData(dataArray);
 
-  let peak = 0;
-  for (let i = 0; i < dataArray.length; i++) {
-    const v = Math.abs(dataArray[i] - 128);
-    if (v > peak) peak = v;
-  }
+  const peak = calculatePeak();
+  latestPeak = peak;
 
   samplePeaks.push(peak);
   const now = performance.now();
@@ -136,11 +136,47 @@ function startVisualization() {
     }
 
     analyser.getByteTimeDomainData(dataArray);
+    const peak = calculatePeak();
+    latestPeak = peak;
+    peakHistory.push(peak);
+    if (peakHistory.length > PEAK_HISTORY_LENGTH) {
+      peakHistory.shift();
+    }
 
     waveformCtx.fillStyle = "#000";
     waveformCtx.fillRect(0, 0, width, height);
 
     const mid = height / 2;
+    const referencePeak = getReferencePeak();
+    if (referencePeak > 0) {
+      const referenceOffset = Math.min(referencePeak, 128) / 128 * mid * 0.9;
+      const referenceY = mid - referenceOffset;
+      waveformCtx.strokeStyle = "#f8fafc";
+      waveformCtx.lineWidth = 1;
+      waveformCtx.beginPath();
+      waveformCtx.moveTo(0, referenceY);
+      waveformCtx.lineTo(width, referenceY);
+      waveformCtx.stroke();
+    }
+
+    if (peakHistory.length > 1) {
+      waveformCtx.strokeStyle = "#f59e0b";
+      waveformCtx.lineWidth = 1.2;
+      waveformCtx.beginPath();
+      const peakSliceWidth = width / (peakHistory.length - 1);
+      for (let i = 0; i < peakHistory.length; i++) {
+        const peakOffset = Math.min(peakHistory[i], 128) / 128 * mid * 0.9;
+        const y = mid - peakOffset;
+        const x = i * peakSliceWidth;
+        if (i === 0) {
+          waveformCtx.moveTo(x, y);
+        } else {
+          waveformCtx.lineTo(x, y);
+        }
+      }
+      waveformCtx.stroke();
+    }
+
     waveformCtx.strokeStyle = "#30d158";
     waveformCtx.lineWidth = 1.5;
     waveformCtx.beginPath();
@@ -219,11 +255,8 @@ async function playGoBeep() {
 function detectShots() {
   analyser.getByteTimeDomainData(dataArray);
 
-  let peak = 0;
-  for (let i = 0; i < dataArray.length; i++) {
-    const v = Math.abs(dataArray[i] - 128);
-    if (v > peak) peak = v;
-  }
+  const peak = calculatePeak();
+  latestPeak = peak;
 
   const threshold = averagePeak * mapSensitivity(Number(sensitivityEl.value));
 
@@ -244,6 +277,24 @@ function mapSensitivity(value) {
   const clamped = Math.max(0, Math.min(1, value));
   const curve = Math.pow(clamped, 1.5);
   return 2.0 - curve * 1.5;
+}
+
+function calculatePeak() {
+  let peak = 0;
+  for (let i = 0; i < dataArray.length; i++) {
+    const v = Math.abs(dataArray[i] - 128);
+    if (v > peak) peak = v;
+  }
+  return peak;
+}
+
+function getReferencePeak() {
+  const sensitivity = Number(sensitivityEl.value);
+  const basePeak = averagePeak
+    ?? (peakHistory.length
+      ? peakHistory.reduce((sum, value) => sum + value, 0) / peakHistory.length
+      : latestPeak);
+  return basePeak * mapSensitivity(sensitivity);
 }
 
 function updateResults() {
