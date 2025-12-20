@@ -32,8 +32,19 @@ document.getElementById("startBtn").onclick = startTimer;
 async function initAudio() {
   if (audioContext) return;
 
-  audioContext = new AudioContext({ latencyHint: "interactive" });
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  audioContext = new AudioContextClass({ latencyHint: "interactive" });
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    },
+  });
+
+  if (audioContext.state === "suspended") {
+    await audioContext.resume();
+  }
 
   mic = audioContext.createMediaStreamSource(stream);
   analyser = audioContext.createAnalyser();
@@ -41,6 +52,10 @@ async function initAudio() {
 
   dataArray = new Uint8Array(analyser.fftSize);
   mic.connect(analyser);
+  const silentGain = audioContext.createGain();
+  silentGain.gain.value = 0;
+  analyser.connect(silentGain);
+  silentGain.connect(audioContext.destination);
   startVisualization();
 }
 
