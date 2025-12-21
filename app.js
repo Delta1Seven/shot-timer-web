@@ -1,8 +1,9 @@
-const APP_VERSION = "1.0.7";
+const APP_VERSION = "1.0.8";
 
 let audioContext;
 let analyser;
 let mic;
+let micStream;
 let dataArray;
 let processingRafId;
 let visualizationRafId;
@@ -13,6 +14,7 @@ let startTime = 0;
 let shots = [];
 let shotCount = 0;
 let totalShots = 0;
+let displayedShotIndex = -1;
 
 const SHOT_COOLDOWN_DEFAULT_MS = 160;
 const SHOT_COOLDOWN_MIN_MS = 1;
@@ -35,6 +37,8 @@ const AUTO_GAIN_MAX = 8;
 const CROSSING_FLASH_MS = 120;
 const SHOT_FLASH_MS = 180;
 const MAX_SHOT_HISTORY = 60;
+const MIN_THRESHOLD = 0.1;
+const MAX_THRESHOLD = 1;
 const CALIBRATION_SHOTS_REQUIRED = 4;
 const CALIBRATION_PEAK_WINDOW_MS = 160;
 const CALIBRATION_PEAK_BUFFER = 0.9;
@@ -59,6 +63,11 @@ const infoIcons = document.querySelectorAll(".info-icon");
 const listeningIndicator = document.getElementById("indicatorListening");
 const beepIndicator = document.getElementById("indicatorBeep");
 const shotIndicator = document.getElementById("indicatorShot");
+const shotNavUpEl = document.getElementById("shotNavUp");
+const shotNavDownEl = document.getElementById("shotNavDown");
+
+let activeTooltip = null;
+let activeTooltipIcon = null;
 
 const audioState = {
   rawLevel: 0,
@@ -103,6 +112,11 @@ silenceResetEl.addEventListener("blur", commitSilenceReset);
 silenceResetEl.addEventListener("change", commitSilenceReset);
 infoIcons.forEach((icon) => icon.addEventListener("click", handleInfoToggle));
 document.addEventListener("click", closeInfoTooltips);
+document.addEventListener("visibilitychange", handlePageHidden);
+window.addEventListener("pagehide", handlePageHidden);
+
+shotNavUpEl.addEventListener("click", () => navigateShots(-1));
+shotNavDownEl.addEventListener("click", () => navigateShots(1));
 
 updateDelayControls();
 
@@ -126,6 +140,7 @@ async function initAudio() {
       autoGainControl: false,
     },
   });
+  micStream = stream;
 
   if (audioContext.state === "suspended") {
     await audioContext.resume();
@@ -374,6 +389,7 @@ async function startTimer() {
   shots = [];
   shotCount = 0;
   totalShots = 0;
+  displayedShotIndex = -1;
   updateDisplay();
 
   statusEl.textContent = "Requesting microphone...";
@@ -410,7 +426,7 @@ function getStartDelayMs() {
   return randomDelay * 1000;
 }
 
-async function playGoBeep(frequency = 1800) {
+async function playGoBeep(frequency = 2300) {
   if (!audioContext) return;
   if (audioContext.state === "suspended") {
     await audioContext.resume();
@@ -419,13 +435,13 @@ async function playGoBeep(frequency = 1800) {
   const oscillator = audioContext.createOscillator();
   const gainNode = audioContext.createGain();
   const now = audioContext.currentTime;
-  const duration = 0.08;
+  const duration = 0.35;
 
-  oscillator.type = "square";
+  oscillator.type = "sine";
   oscillator.frequency.setValueAtTime(frequency, now);
 
   gainNode.gain.setValueAtTime(0.0001, now);
-  gainNode.gain.linearRampToValueAtTime(0.32, now + 0.004);
+  gainNode.gain.linearRampToValueAtTime(0.3, now + 0.01);
   gainNode.gain.exponentialRampToValueAtTime(0.0001, now + duration);
 
   oscillator.connect(gainNode);
@@ -448,6 +464,7 @@ function registerShot(now) {
   }
   totalShots += 1;
   shotCount = totalShots;
+  displayedShotIndex = shots.length - 1;
   shotDetector.lastShotTime = now;
   audioState.shotPulseUntil = now + SHOT_FLASH_MS;
   updateDisplay();
@@ -456,15 +473,30 @@ function registerShot(now) {
 
 function updateDisplay() {
   const shotTotal = totalShots;
-  const lastShotTime = shots.length ? shots[shots.length - 1] : 0;
-  const firstShotTime = shots.length ? shots[0] : 0;
+  if (!shots.length) {
+    shotCountValueEl.textContent = shotTotal;
+    elapsedTimeValueEl.textContent = formatTime(0);
+    firstShotValueEl.textContent = formatTime(0);
+    splitTimeValueEl.textContent = formatTime(0);
+    displayedShotIndex = -1;
+    updateShotNavControls();
+    return;
+  }
+
+  if (displayedShotIndex < 0 || displayedShotIndex >= shots.length) {
+    displayedShotIndex = shots.length - 1;
+  }
+
+  const lastShotTime = shots[displayedShotIndex];
+  const firstShotTime = shots[0];
   const splitTime =
-    shots.length >= 2 ? shots[shots.length - 1] - shots[shots.length - 2] : 0;
+    displayedShotIndex >= 1 ? shots[displayedShotIndex] - shots[displayedShotIndex - 1] : 0;
 
   shotCountValueEl.textContent = shotTotal;
   elapsedTimeValueEl.textContent = formatTime(lastShotTime);
   firstShotValueEl.textContent = formatTime(firstShotTime);
   splitTimeValueEl.textContent = formatTime(splitTime);
+  updateShotNavControls();
 }
 
 function resetTimer() {
@@ -473,9 +505,24 @@ function resetTimer() {
   shots = [];
   shotCount = 0;
   totalShots = 0;
+  displayedShotIndex = -1;
   updateDisplay();
   statusEl.textContent = "Idle";
   setIndicatorState({ listening: false, beep: false, shot: false });
+}
+
+function navigateShots(direction) {
+  if (!shots.length) return;
+  const nextIndex = clampNumber(displayedShotIndex + direction, 0, shots.length - 1);
+  if (nextIndex === displayedShotIndex) return;
+  displayedShotIndex = nextIndex;
+  updateDisplay();
+}
+
+function updateShotNavControls() {
+  const hasShots = shots.length > 0;
+  shotNavUpEl.disabled = !hasShots || displayedShotIndex <= 0;
+  shotNavDownEl.disabled = !hasShots || displayedShotIndex >= shots.length - 1;
 }
 
 function resetDetectionState() {
@@ -492,6 +539,57 @@ function clearPendingTimers() {
   if (delayTimeoutId) {
     clearTimeout(delayTimeoutId);
     delayTimeoutId = null;
+  }
+}
+
+function handlePageHidden(event) {
+  if (event.type === "visibilitychange" && !document.hidden) return;
+  handleBackgrounded();
+}
+
+function handleBackgrounded() {
+  clearPendingTimers();
+  resetDetectionState();
+  setIndicatorState({ listening: false, beep: false, shot: false });
+  statusEl.textContent = "Idle";
+  stopAudioProcessing();
+  releaseAudioResources();
+  closeActiveTooltip();
+}
+
+function stopAudioProcessing() {
+  if (processingRafId) {
+    cancelAnimationFrame(processingRafId);
+    processingRafId = null;
+  }
+  if (visualizationRafId) {
+    cancelAnimationFrame(visualizationRafId);
+    visualizationRafId = null;
+  }
+}
+
+async function releaseAudioResources() {
+  if (micStream) {
+    micStream.getTracks().forEach((track) => track.stop());
+    micStream = null;
+  }
+  if (mic) {
+    mic.disconnect();
+    mic = null;
+  }
+  if (analyser) {
+    analyser.disconnect();
+    analyser = null;
+  }
+  dataArray = null;
+  if (audioContext) {
+    const contextToClose = audioContext;
+    audioContext = null;
+    try {
+      await contextToClose.close();
+    } catch (error) {
+      // Closing can fail on some browsers; ignore since we're already stopping tracks.
+    }
   }
 }
 
@@ -557,16 +655,64 @@ function commitSilenceReset() {
 function handleInfoToggle(event) {
   event.stopPropagation();
   const icon = event.currentTarget;
-  const shouldOpen = !icon.classList.contains("is-open");
-  infoIcons.forEach((item) => item.classList.remove("is-open"));
-  if (shouldOpen) {
-    icon.classList.add("is-open");
+  if (activeTooltipIcon === icon) {
+    closeActiveTooltip();
+    return;
   }
+  openInfoTooltip(icon);
 }
 
 function closeInfoTooltips(event) {
-  if (event.target.closest(".info-icon")) return;
-  infoIcons.forEach((item) => item.classList.remove("is-open"));
+  if (event.target.closest(".info-icon") || event.target.closest(".tooltip-overlay")) return;
+  closeActiveTooltip();
+}
+
+function openInfoTooltip(icon) {
+  closeActiveTooltip();
+  const tooltipText = icon.dataset.tooltip;
+  if (!tooltipText) return;
+
+  const tooltip = document.createElement("div");
+  tooltip.className = "tooltip-overlay";
+  tooltip.textContent = tooltipText;
+  tooltip.addEventListener("click", (event) => event.stopPropagation());
+  document.body.appendChild(tooltip);
+
+  const iconRect = icon.getBoundingClientRect();
+  const tooltipRect = tooltip.getBoundingClientRect();
+  const viewportPadding = 8;
+  const preferredTop = iconRect.top - tooltipRect.height - 10;
+  const placeAbove = preferredTop >= viewportPadding;
+
+  let top = placeAbove ? preferredTop : iconRect.bottom + 10;
+  if (top + tooltipRect.height > window.innerHeight - viewportPadding) {
+    top = window.innerHeight - tooltipRect.height - viewportPadding;
+  }
+  if (top < viewportPadding) {
+    top = viewportPadding;
+  }
+
+  let left = iconRect.left + iconRect.width / 2 - tooltipRect.width / 2;
+  const maxLeft = window.innerWidth - tooltipRect.width - viewportPadding;
+  left = clampNumber(left, viewportPadding, Math.max(viewportPadding, maxLeft));
+
+  tooltip.style.top = `${top}px`;
+  tooltip.style.left = `${left}px`;
+
+  icon.classList.add("is-open");
+  activeTooltip = tooltip;
+  activeTooltipIcon = icon;
+}
+
+function closeActiveTooltip() {
+  if (activeTooltip) {
+    activeTooltip.remove();
+  }
+  if (activeTooltipIcon) {
+    activeTooltipIcon.classList.remove("is-open");
+  }
+  activeTooltip = null;
+  activeTooltipIcon = null;
 }
 
 function smoothValue(previous, next, factor) {
@@ -584,12 +730,18 @@ function getSensitivityValue() {
 
 function getThreshold() {
   const sensitivityValue = getSensitivityValue();
-  const normalizedThreshold = 0.1 + (1 - sensitivityValue) * 0.9;
-  return clampNumber(normalizedThreshold, 0.1, 1);
+  // Higher sensitivity should lower the detection threshold.
+  const normalizedThreshold =
+    MAX_THRESHOLD - sensitivityValue * (MAX_THRESHOLD - MIN_THRESHOLD);
+  return clampNumber(normalizedThreshold, MIN_THRESHOLD, MAX_THRESHOLD);
 }
 
 function applySensitivityThreshold(threshold) {
-  const sensitivityValue = clampNumber((1 - threshold) / 0.9, 0, 1);
+  const sensitivityValue = clampNumber(
+    (MAX_THRESHOLD - threshold) / (MAX_THRESHOLD - MIN_THRESHOLD),
+    0,
+    1
+  );
   sensitivityEl.value = sensitivityValue.toFixed(2);
   sensitivityEl.dispatchEvent(new Event("input", { bubbles: true }));
 }

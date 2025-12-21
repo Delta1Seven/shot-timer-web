@@ -9,7 +9,7 @@
 <body>
 
   <div class="app">
-    <div class="version">v1.0.7</div>
+    <div class="version">v1.0.8</div>
     <h1>Shot Timer</h1>
 
     <button id="sampleBtn">Record Sample Shots</button>
@@ -66,6 +66,10 @@
         <span class="lcd-label lcd-label-right">SPLIT</span>
         <span class="lcd-value" id="splitTimeValue">0.00</span>
       </div>
+      <div class="shot-nav" aria-label="Shot navigation controls">
+        <button id="shotNavUp" type="button" aria-label="Previous shot">▲</button>
+        <button id="shotNavDown" type="button" aria-label="Next shot">▼</button>
+      </div>
     </div>
 
     <button id="startBtn">Start Timer</button>
@@ -79,14 +83,13 @@
       <label class="inline">
         <span class="label-row">
           Shot Cooldown (ms)
-          <button class="info-icon" type="button" aria-label="Shot Cooldown info">
+          <button
+            class="info-icon"
+            type="button"
+            aria-label="Shot Cooldown info"
+            data-tooltip="Prevents echoes or reflections from being counted as extra shots.&#10;• Too low: indoor ranges may register double shots&#10;• Too high: very fast split times may be ignored&#10;Example: Increase this if you hear echoes after each shot."
+          >
             ℹ
-            <span class="tooltip">
-              Prevents echoes or reflections from being counted as extra shots.
-              • Too low: indoor ranges may register double shots
-              • Too high: very fast split times may be ignored
-              Example: Increase this if you hear echoes after each shot.
-            </span>
           </button>
         </span>
         <input type="number" id="shotCooldown" min="1" max="500" step="any" value="160" />
@@ -94,14 +97,13 @@
       <label class="inline">
         <span class="label-row">
           Silence Reset Time (ms)
-          <button class="info-icon" type="button" aria-label="Silence Reset Time info">
+          <button
+            class="info-icon"
+            type="button"
+            aria-label="Silence Reset Time info"
+            data-tooltip="Requires the sound to drop below the trigger threshold before another shot can be detected.&#10;• Too low: ringing or reverberation may trigger false shots&#10;• Too high: extremely fast follow-up shots may not register&#10;Example: Increase this for indoor ranges with concrete walls."
+          >
             ℹ
-            <span class="tooltip">
-              Requires the sound to drop below the trigger threshold before another shot can be detected.
-              • Too low: ringing or reverberation may trigger false shots
-              • Too high: extremely fast follow-up shots may not register
-              Example: Increase this for indoor ranges with concrete walls.
-            </span>
           </button>
         </span>
         <input type="number" id="silenceReset" min="1" max="500" step="any" value="40" />
