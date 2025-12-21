@@ -1,4 +1,4 @@
-const APP_VERSION = "1.0.3";
+const APP_VERSION = "1.0.2";
 
 let audioContext;
 let analyser;
@@ -7,6 +7,7 @@ let dataArray;
 let processingRafId;
 let visualizationRafId;
 let delayTimeoutId;
+let parTimeoutId;
 let shotFlashTimeoutId;
 
 let startTime = 0;
@@ -39,14 +40,12 @@ const splitTimeValueEl = document.getElementById("splitTimeValue");
 const sensitivityEl = document.getElementById("sensitivity");
 const waveformCanvas = document.getElementById("waveform");
 const waveformCtx = waveformCanvas.getContext("2d");
-const customDelayToggleEl = document.getElementById("customDelayToggle");
-const delaySettingsEl = document.getElementById("delaySettings");
-const delayCollapseBtn = document.getElementById("delayCollapseBtn");
-const delayModeLabelEl = document.getElementById("delayModeLabel");
 const randomDelayEl = document.getElementById("randomDelay");
 const minDelayEl = document.getElementById("minDelay");
 const maxDelayEl = document.getElementById("maxDelay");
 const fixedDelayEl = document.getElementById("fixedDelay");
+const parEnabledEl = document.getElementById("parEnabled");
+const parTimeEl = document.getElementById("parTime");
 const listeningIndicator = document.getElementById("indicatorListening");
 const beepIndicator = document.getElementById("indicatorBeep");
 const shotIndicator = document.getElementById("indicatorShot");
@@ -79,11 +78,8 @@ fixedDelayEl.value = DEFAULT_FIXED_DELAY;
 randomDelayEl.addEventListener("change", updateDelayControls);
 minDelayEl.addEventListener("input", clampDelayInputs);
 maxDelayEl.addEventListener("input", clampDelayInputs);
-customDelayToggleEl.addEventListener("change", updateDelaySettingsVisibility);
-delayCollapseBtn.addEventListener("click", toggleDelayCollapse);
 
 updateDelayControls();
-updateDelaySettingsVisibility();
 
 sensitivityEl.addEventListener("input", () => {
   audioState.isAboveThreshold = false;
@@ -127,76 +123,32 @@ async function initAudio() {
 async function recordSamples() {
   await initAudio();
   resetDetectionState();
-  statusEl.textContent = "Listening for 4 shots... 0/4";
+
+  statusEl.textContent = "Calibrating ambient level...";
   setIndicatorState({ listening: true, beep: false, shot: false });
 
   const calibrationStart = performance.now();
   const calibrationLevels = [];
-  let ambientLevel = 0.05;
 
-  const captureAmbient = () => {
+  const sample = () => {
     if (!analyser) return;
     analyser.getByteTimeDomainData(dataArray);
     const peak = calculatePeakNormalized(dataArray);
-    calibrationLevels.push(clampNumber(peak * audioState.autoGain, 0, 1));
+    calibrationLevels.push(peak);
 
-    if (performance.now() - calibrationStart < 500) {
-      requestAnimationFrame(captureAmbient);
+    if (performance.now() - calibrationStart < 600) {
+      requestAnimationFrame(sample);
       return;
     }
 
-    ambientLevel =
-      calibrationLevels.reduce((sum, value) => sum + value, 0) / Math.max(calibrationLevels.length, 1);
-    listenForShots();
+    const averageLevel = calibrationLevels.reduce((sum, value) => sum + value, 0) / calibrationLevels.length;
+    audioState.autoGainLevel = averageLevel;
+    audioState.autoGain = clampNumber(AUTO_GAIN_TARGET / Math.max(averageLevel, 0.02), AUTO_GAIN_MIN, AUTO_GAIN_MAX);
+    statusEl.textContent = "Calibration complete ✔";
+    setIndicatorState({ listening: false, beep: false, shot: false });
   };
 
-  const shotPeaks = [];
-  let lastShotAt = -Infinity;
-  let captureWindowUntil = 0;
-  let capturePeak = 0;
-
-  const listenForShots = () => {
-    const sample = () => {
-      if (!analyser) return;
-      analyser.getByteTimeDomainData(dataArray);
-      const peak = calculatePeakNormalized(dataArray);
-      const normalizedPeak = clampNumber(peak * audioState.autoGain, 0, 1);
-      const now = performance.now();
-      const threshold = clampNumber(ambientLevel + 0.15, 0.15, 0.9);
-
-      if (captureWindowUntil && now >= captureWindowUntil) {
-        const finalPeak = clampNumber(capturePeak, 0.05, 1);
-        shotPeaks.push(finalPeak);
-        setSensitivityForPeak(finalPeak);
-        statusEl.textContent = `Listening for 4 shots... ${shotPeaks.length}/4`;
-        flashShotIndicator();
-        captureWindowUntil = 0;
-        capturePeak = 0;
-      } else if (captureWindowUntil > now) {
-        if (normalizedPeak > capturePeak) {
-          capturePeak = normalizedPeak;
-        }
-      } else if (normalizedPeak >= threshold && now - lastShotAt > SHOT_COOLDOWN_MS) {
-        captureWindowUntil = now + 120;
-        capturePeak = normalizedPeak;
-        lastShotAt = now;
-      }
-
-      if (shotPeaks.length < 4) {
-        requestAnimationFrame(sample);
-        return;
-      }
-
-      const averagePeak = shotPeaks.reduce((sum, value) => sum + value, 0) / shotPeaks.length;
-      setSensitivityForPeak(averagePeak);
-      statusEl.textContent = "Sample shots complete ✔";
-      setIndicatorState({ listening: false, beep: false, shot: false });
-    };
-
-    sample();
-  };
-
-  captureAmbient();
+  sample();
 }
 
 function resizeWaveformCanvas() {
@@ -377,16 +329,12 @@ async function startTimer() {
     statusEl.textContent = "BEEP!";
     setIndicatorState({ listening: true, beep: true, shot: false });
     playGoBeep();
+    scheduleParBeep();
     shotDetector.isActive = true;
   }, delayMs);
 }
 
 function getStartDelayMs() {
-  if (!customDelayToggleEl.checked) {
-    const randomDelay = DEFAULT_DELAY_MIN + Math.random() * (DEFAULT_DELAY_MAX - DEFAULT_DELAY_MIN);
-    return randomDelay * 1000;
-  }
-
   const fixedDelaySeconds = clampNumber(Number(fixedDelayEl.value), MIN_DELAY_SECONDS, MAX_DELAY_SECONDS);
   if (!randomDelayEl.checked) {
     return fixedDelaySeconds * 1000;
@@ -396,6 +344,16 @@ function getStartDelayMs() {
   const maxDelaySeconds = clampNumber(Number(maxDelayEl.value), minDelaySeconds, MAX_DELAY_SECONDS);
   const randomDelay = minDelaySeconds + Math.random() * (maxDelaySeconds - minDelaySeconds);
   return randomDelay * 1000;
+}
+
+function scheduleParBeep() {
+  if (!parEnabledEl.checked) return;
+  const parSeconds = Math.max(0, Number(parTimeEl.value));
+  if (!parSeconds) return;
+
+  parTimeoutId = window.setTimeout(() => {
+    playGoBeep(1600);
+  }, parSeconds * 1000);
 }
 
 async function playGoBeep(frequency = 1800) {
@@ -480,15 +438,17 @@ function clearPendingTimers() {
     clearTimeout(delayTimeoutId);
     delayTimeoutId = null;
   }
+  if (parTimeoutId) {
+    clearTimeout(parTimeoutId);
+    parTimeoutId = null;
+  }
 }
 
 function updateDelayControls() {
-  const isCustom = customDelayToggleEl.checked;
   const isRandom = randomDelayEl.checked;
-  randomDelayEl.disabled = !isCustom;
-  minDelayEl.disabled = !isCustom || !isRandom;
-  maxDelayEl.disabled = !isCustom || !isRandom;
-  fixedDelayEl.disabled = !isCustom || isRandom;
+  minDelayEl.disabled = !isRandom;
+  maxDelayEl.disabled = !isRandom;
+  fixedDelayEl.disabled = isRandom;
 }
 
 function clampDelayInputs() {
@@ -514,13 +474,6 @@ function formatTime(value) {
 
 function getSensitivityValue() {
   return clampNumber(Number(sensitivityEl.value), 0, 1);
-}
-
-function setSensitivityForPeak(peak) {
-  const targetThreshold = clampNumber(peak * 0.9, 0.1, 1);
-  const sensitivityValue = 1 - (targetThreshold - 0.1) / 0.9;
-  sensitivityEl.value = clampNumber(sensitivityValue, 0, 1).toFixed(2);
-  audioState.isAboveThreshold = false;
 }
 
 function getThreshold() {
@@ -558,23 +511,9 @@ function flashShotIndicator() {
   }, SHOT_FLASH_MS);
 }
 
-function updateDelaySettingsVisibility() {
-  const isCustom = customDelayToggleEl.checked;
-  delayModeLabelEl.textContent = isCustom ? "Custom" : "Default";
-  delayCollapseBtn.hidden = !isCustom;
-  if (!isCustom) {
-    delaySettingsEl.hidden = true;
-    delayCollapseBtn.textContent = "Show settings";
-  } else {
-    if (delaySettingsEl.hidden) {
-      delaySettingsEl.hidden = false;
-    }
-    delayCollapseBtn.textContent = "Hide settings";
-  }
-  updateDelayControls();
+function updateParControlState() {
+  parTimeEl.disabled = !parEnabledEl.checked;
 }
 
-function toggleDelayCollapse() {
-  delaySettingsEl.hidden = !delaySettingsEl.hidden;
-  delayCollapseBtn.textContent = delaySettingsEl.hidden ? "Show settings" : "Hide settings";
-}
+parEnabledEl.addEventListener("change", updateParControlState);
+updateParControlState();
