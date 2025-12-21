@@ -155,7 +155,7 @@ input[type="number"] {
 }
 
 .tooltip-overlay {
-  position: fixed;
+  position: absolute;
   padding: 10px 12px;
   border-radius: 10px;
   background: #0f172a;
