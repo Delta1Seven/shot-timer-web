@@ -1,4 +1,4 @@
-const APP_VERSION = "1.0.5";
+const APP_VERSION = "1.0.7";
 
 let audioContext;
 let analyser;
@@ -15,11 +15,11 @@ let shotCount = 0;
 let totalShots = 0;
 
 const SHOT_COOLDOWN_DEFAULT_MS = 160;
-const SHOT_COOLDOWN_MIN_MS = 50;
+const SHOT_COOLDOWN_MIN_MS = 1;
 const SHOT_COOLDOWN_MAX_MS = 500;
 const SILENCE_RESET_DEFAULT_MS = 40;
-const SILENCE_RESET_MIN_MS = 10;
-const SILENCE_RESET_MAX_MS = 200;
+const SILENCE_RESET_MIN_MS = 1;
+const SILENCE_RESET_MAX_MS = 500;
 const DEFAULT_DELAY_MIN = 1;
 const DEFAULT_DELAY_MAX = 4;
 const DEFAULT_FIXED_DELAY = 2;
@@ -95,8 +95,12 @@ randomDelayEl.addEventListener("change", updateDelayControls);
 minDelayEl.addEventListener("input", clampDelayInputs);
 maxDelayEl.addEventListener("input", clampDelayInputs);
 advancedToggleEl.addEventListener("click", toggleAdvancedSettings);
-shotCooldownEl.addEventListener("input", updateShotCooldown);
-silenceResetEl.addEventListener("input", updateSilenceReset);
+shotCooldownEl.addEventListener("input", handleShotCooldownInput);
+shotCooldownEl.addEventListener("blur", commitShotCooldown);
+shotCooldownEl.addEventListener("change", commitShotCooldown);
+silenceResetEl.addEventListener("input", handleSilenceResetInput);
+silenceResetEl.addEventListener("blur", commitSilenceReset);
+silenceResetEl.addEventListener("change", commitSilenceReset);
 infoIcons.forEach((icon) => icon.addEventListener("click", handleInfoToggle));
 document.addEventListener("click", closeInfoTooltips);
 
@@ -513,19 +517,41 @@ function clampNumber(value, min, max) {
 function toggleAdvancedSettings() {
   const isExpanded = advancedToggleEl.getAttribute("aria-expanded") === "true";
   advancedToggleEl.setAttribute("aria-expanded", String(!isExpanded));
-  advancedPanelEl.hidden = isExpanded;
+  advancedPanelEl.classList.toggle("is-open", !isExpanded);
 }
 
-function updateShotCooldown() {
-  const value = clampNumber(Number(shotCooldownEl.value), SHOT_COOLDOWN_MIN_MS, SHOT_COOLDOWN_MAX_MS);
-  shotCooldownMs = value;
-  shotCooldownEl.value = value;
+function handleShotCooldownInput() {
+  const value = Number(shotCooldownEl.value);
+  if (Number.isFinite(value)) {
+    shotCooldownEl.dataset.rawValue = String(value);
+  }
 }
 
-function updateSilenceReset() {
-  const value = clampNumber(Number(silenceResetEl.value), SILENCE_RESET_MIN_MS, SILENCE_RESET_MAX_MS);
-  minSilenceBeforeShotMs = value;
-  silenceResetEl.value = value;
+function commitShotCooldown() {
+  // Validate on blur/change to avoid interrupting typing.
+  const rawValue = Number(shotCooldownEl.value);
+  const nextValue = Number.isFinite(rawValue)
+    ? clampNumber(rawValue, SHOT_COOLDOWN_MIN_MS, SHOT_COOLDOWN_MAX_MS)
+    : shotCooldownMs;
+  shotCooldownMs = nextValue;
+  shotCooldownEl.value = nextValue;
+}
+
+function handleSilenceResetInput() {
+  const value = Number(silenceResetEl.value);
+  if (Number.isFinite(value)) {
+    silenceResetEl.dataset.rawValue = String(value);
+  }
+}
+
+function commitSilenceReset() {
+  // Validate on blur/change to avoid interrupting typing.
+  const rawValue = Number(silenceResetEl.value);
+  const nextValue = Number.isFinite(rawValue)
+    ? clampNumber(rawValue, SILENCE_RESET_MIN_MS, SILENCE_RESET_MAX_MS)
+    : minSilenceBeforeShotMs;
+  minSilenceBeforeShotMs = nextValue;
+  silenceResetEl.value = nextValue;
 }
 
 function handleInfoToggle(event) {
