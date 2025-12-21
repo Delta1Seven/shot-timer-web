@@ -1,4 +1,4 @@
-const APP_VERSION = "1.0.2";
+const APP_VERSION = "1.0.4";
 
 let audioContext;
 let analyser;
@@ -7,7 +7,6 @@ let dataArray;
 let processingRafId;
 let visualizationRafId;
 let delayTimeoutId;
-let parTimeoutId;
 let shotFlashTimeoutId;
 
 let startTime = 0;
@@ -31,6 +30,9 @@ const AUTO_GAIN_MAX = 8;
 const CROSSING_FLASH_MS = 120;
 const SHOT_FLASH_MS = 180;
 const MAX_SHOT_HISTORY = 60;
+const CALIBRATION_SHOTS_REQUIRED = 4;
+const CALIBRATION_PEAK_WINDOW_MS = 160;
+const CALIBRATION_PEAK_BUFFER = 0.9;
 
 const statusEl = document.getElementById("status");
 const shotCountValueEl = document.getElementById("shotCountValue");
@@ -44,8 +46,6 @@ const randomDelayEl = document.getElementById("randomDelay");
 const minDelayEl = document.getElementById("minDelay");
 const maxDelayEl = document.getElementById("maxDelay");
 const fixedDelayEl = document.getElementById("fixedDelay");
-const parEnabledEl = document.getElementById("parEnabled");
-const parTimeEl = document.getElementById("parTime");
 const listeningIndicator = document.getElementById("indicatorListening");
 const beepIndicator = document.getElementById("indicatorBeep");
 const shotIndicator = document.getElementById("indicatorShot");
@@ -124,28 +124,56 @@ async function recordSamples() {
   await initAudio();
   resetDetectionState();
 
-  statusEl.textContent = "Calibrating ambient level...";
+  statusEl.textContent = "Fire 4 shots to calibrate...";
   setIndicatorState({ listening: true, beep: false, shot: false });
 
-  const calibrationStart = performance.now();
-  const calibrationLevels = [];
+  const calibrationPeaks = [];
+  let wasAboveThreshold = false;
+  let lastShotTime = -Infinity;
+  let peakCapture = null;
 
   const sample = () => {
     if (!analyser) return;
     analyser.getByteTimeDomainData(dataArray);
     const peak = calculatePeakNormalized(dataArray);
-    calibrationLevels.push(peak);
+    const normalizedLevel = clampNumber(peak * audioState.autoGain, 0, 1);
+    const now = performance.now();
 
-    if (performance.now() - calibrationStart < 600) {
-      requestAnimationFrame(sample);
-      return;
+    if (peakCapture) {
+      peakCapture.peak = Math.max(peakCapture.peak, normalizedLevel);
+      if (now - peakCapture.startedAt >= CALIBRATION_PEAK_WINDOW_MS) {
+        finalizeCalibrationShot(peakCapture.peak);
+        peakCapture = null;
+      }
     }
 
-    const averageLevel = calibrationLevels.reduce((sum, value) => sum + value, 0) / calibrationLevels.length;
-    audioState.autoGainLevel = averageLevel;
-    audioState.autoGain = clampNumber(AUTO_GAIN_TARGET / Math.max(averageLevel, 0.02), AUTO_GAIN_MIN, AUTO_GAIN_MAX);
-    statusEl.textContent = "Calibration complete ✔";
-    setIndicatorState({ listening: false, beep: false, shot: false });
+    const threshold = getThreshold();
+    const isAbove = normalizedLevel >= threshold;
+    if (isAbove && !wasAboveThreshold && !peakCapture && now - lastShotTime >= SHOT_COOLDOWN_MS) {
+      peakCapture = { startedAt: now, peak: normalizedLevel };
+      lastShotTime = now;
+    }
+    wasAboveThreshold = isAbove;
+
+    if (calibrationPeaks.length < CALIBRATION_SHOTS_REQUIRED) {
+      requestAnimationFrame(sample);
+    }
+  };
+
+  const finalizeCalibrationShot = (shotPeak) => {
+    const targetThreshold = clampNumber(shotPeak * CALIBRATION_PEAK_BUFFER, 0.1, 1);
+    applySensitivityThreshold(targetThreshold);
+    calibrationPeaks.push(shotPeak);
+    statusEl.textContent = `Shot ${calibrationPeaks.length}/${CALIBRATION_SHOTS_REQUIRED} captured...`;
+
+    if (calibrationPeaks.length === CALIBRATION_SHOTS_REQUIRED) {
+      const averagePeak =
+        calibrationPeaks.reduce((sum, value) => sum + value, 0) / calibrationPeaks.length;
+      const averageThreshold = clampNumber(averagePeak * CALIBRATION_PEAK_BUFFER, 0.1, 1);
+      applySensitivityThreshold(averageThreshold);
+      statusEl.textContent = "Calibration complete ✔";
+      setIndicatorState({ listening: false, beep: false, shot: false });
+    }
   };
 
   sample();
@@ -329,7 +357,6 @@ async function startTimer() {
     statusEl.textContent = "BEEP!";
     setIndicatorState({ listening: true, beep: true, shot: false });
     playGoBeep();
-    scheduleParBeep();
     shotDetector.isActive = true;
   }, delayMs);
 }
@@ -344,16 +371,6 @@ function getStartDelayMs() {
   const maxDelaySeconds = clampNumber(Number(maxDelayEl.value), minDelaySeconds, MAX_DELAY_SECONDS);
   const randomDelay = minDelaySeconds + Math.random() * (maxDelaySeconds - minDelaySeconds);
   return randomDelay * 1000;
-}
-
-function scheduleParBeep() {
-  if (!parEnabledEl.checked) return;
-  const parSeconds = Math.max(0, Number(parTimeEl.value));
-  if (!parSeconds) return;
-
-  parTimeoutId = window.setTimeout(() => {
-    playGoBeep(1600);
-  }, parSeconds * 1000);
 }
 
 async function playGoBeep(frequency = 1800) {
@@ -438,10 +455,6 @@ function clearPendingTimers() {
     clearTimeout(delayTimeoutId);
     delayTimeoutId = null;
   }
-  if (parTimeoutId) {
-    clearTimeout(parTimeoutId);
-    parTimeoutId = null;
-  }
 }
 
 function updateDelayControls() {
@@ -482,6 +495,12 @@ function getThreshold() {
   return clampNumber(normalizedThreshold, 0.1, 1);
 }
 
+function applySensitivityThreshold(threshold) {
+  const sensitivityValue = clampNumber((1 - threshold) / 0.9, 0, 1);
+  sensitivityEl.value = sensitivityValue.toFixed(2);
+  sensitivityEl.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 function calculatePeakNormalized(buffer) {
   let peak = 0;
   for (let i = 0; i < buffer.length; i++) {
@@ -510,10 +529,3 @@ function flashShotIndicator() {
     setIndicator(shotIndicator, false);
   }, SHOT_FLASH_MS);
 }
-
-function updateParControlState() {
-  parTimeEl.disabled = !parEnabledEl.checked;
-}
-
-parEnabledEl.addEventListener("change", updateParControlState);
-updateParControlState();
