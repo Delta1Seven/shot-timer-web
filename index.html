@@ -9,7 +9,7 @@
 <body>
 
   <div class="app">
-    <div class="version">v1.0.5</div>
+    <div class="version">v1.0.7</div>
     <h1>Shot Timer</h1>
 
     <button id="sampleBtn">Record Sample Shots</button>
@@ -74,11 +74,11 @@
     <button id="advancedToggle" class="secondary" type="button" aria-expanded="false">
       Advanced Settings
     </button>
-    <div id="advancedPanel" class="control-group advanced-settings" hidden>
+    <div id="advancedPanel" class="control-group advanced-settings">
       <div class="control-label">Advanced Settings</div>
       <label class="inline">
         <span class="label-row">
-          Shot Cooldown
+          Shot Cooldown (ms)
           <button class="info-icon" type="button" aria-label="Shot Cooldown info">
             ℹ
             <span class="tooltip">
@@ -89,11 +89,11 @@
             </span>
           </button>
         </span>
-        <input type="number" id="shotCooldown" min="50" max="500" step="10" value="160" />
+        <input type="number" id="shotCooldown" min="1" max="500" step="any" value="160" />
       </label>
       <label class="inline">
         <span class="label-row">
-          Silence Reset Time
+          Silence Reset Time (ms)
           <button class="info-icon" type="button" aria-label="Silence Reset Time info">
             ℹ
             <span class="tooltip">
@@ -104,7 +104,7 @@
             </span>
           </button>
         </span>
-        <input type="number" id="silenceReset" min="10" max="200" step="5" value="40" />
+        <input type="number" id="silenceReset" min="1" max="500" step="any" value="40" />
       </label>
     </div>
 
