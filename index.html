@@ -9,7 +9,7 @@
 <body>
 
   <div class="app">
-    <div class="version">v1.0.2</div>
+    <div class="version">v1.0.3</div>
     <h1>Shot Timer</h1>
 
     <button id="sampleBtn">Record Sample Shots</button>
@@ -19,38 +19,38 @@
       <input type="range" id="sensitivity" min="0" max="1" step="0.01" value="0.5" />
     </label>
 
-    <div class="control-group">
-      <span class="control-label">Start Delay</span>
-      <label class="toggle">
-        <input type="checkbox" id="randomDelay" checked />
-        <span>Randomize delay</span>
-      </label>
-      <div class="delay-row">
-        <label class="inline">
-          Min (sec)
-          <input type="number" id="minDelay" min="1" max="4" step="0.1" />
+    <div class="control-group" id="startDelayGroup">
+      <div class="control-header">
+        <span class="control-label">Start Delay</span>
+        <div class="toggle-row">
+          <span class="toggle-text" id="delayModeLabel">Default</span>
+          <label class="switch">
+            <input type="checkbox" id="customDelayToggle" />
+            <span class="switch-slider"></span>
+          </label>
+        </div>
+      </div>
+      <button type="button" class="collapse-toggle" id="delayCollapseBtn">Hide settings</button>
+      <div class="delay-settings" id="delaySettings">
+        <label class="toggle">
+          <input type="checkbox" id="randomDelay" checked />
+          <span>Randomize delay</span>
         </label>
+        <div class="delay-row">
+          <label class="inline">
+            Min (sec)
+            <input type="number" id="minDelay" min="1" max="4" step="0.1" />
+          </label>
+          <label class="inline">
+            Max (sec)
+            <input type="number" id="maxDelay" min="1" max="4" step="0.1" />
+          </label>
+        </div>
         <label class="inline">
-          Max (sec)
-          <input type="number" id="maxDelay" min="1" max="4" step="0.1" />
+          Fixed delay (sec)
+          <input type="number" id="fixedDelay" min="1" max="4" step="0.1" />
         </label>
       </div>
-      <label class="inline">
-        Fixed delay (sec)
-        <input type="number" id="fixedDelay" min="1" max="4" step="0.1" />
-      </label>
-    </div>
-
-    <div class="control-group">
-      <span class="control-label">Par Time</span>
-      <label class="toggle">
-        <input type="checkbox" id="parEnabled" />
-        <span>Enable par beep</span>
-      </label>
-      <label class="inline">
-        Par time (sec)
-        <input type="number" id="parTime" min="0" max="30" step="0.1" value="3" />
-      </label>
     </div>
 
     <canvas id="waveform" aria-label="Live audio waveform"></canvas>
