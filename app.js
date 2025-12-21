@@ -185,7 +185,8 @@ function startProcessing() {
       AUTO_GAIN_LERP
     );
 
-    const normalizedLevel = clampNumber(audioState.smoothedLevel * audioState.autoGain, 0, 1);
+    const levelForDetection = Math.max(rawPeak, audioState.smoothedLevel);
+    const normalizedLevel = clampNumber(levelForDetection * audioState.autoGain, 0, 1);
     audioState.normalizedLevel = normalizedLevel;
 
     audioState.history.push(normalizedLevel);
