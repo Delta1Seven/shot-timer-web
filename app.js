@@ -13,6 +13,7 @@ let shotFlashTimeoutId;
 let startTime = 0;
 let shots = [];
 let shotCount = 0;
+let totalShots = 0;
 
 const SHOT_COOLDOWN_MS = 160;
 const DEFAULT_DELAY_MIN = 1;
@@ -29,6 +30,7 @@ const AUTO_GAIN_MIN = 1;
 const AUTO_GAIN_MAX = 8;
 const CROSSING_FLASH_MS = 120;
 const SHOT_FLASH_MS = 180;
+const MAX_SHOT_HISTORY = 60;
 
 const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
@@ -305,6 +307,7 @@ async function startTimer() {
   shots = [];
   resultsEl.textContent = "";
   shotCount = 0;
+  totalShots = 0;
   shotCountEl.textContent = "Shots: 0";
 
   statusEl.textContent = "Stand by...";
@@ -376,7 +379,11 @@ async function playGoBeep(frequency = 1800) {
 function registerShot(now) {
   const elapsed = (now - startTime) / 1000;
   shots.push(elapsed);
-  shotCount = shots.length;
+  if (shots.length > MAX_SHOT_HISTORY) {
+    shots.shift();
+  }
+  totalShots += 1;
+  shotCount = totalShots;
   shotDetector.lastShotTime = now;
   audioState.shotPulseUntil = now + SHOT_FLASH_MS;
   shotCountEl.textContent = `Shots: ${shotCount}`;
@@ -385,13 +392,25 @@ function registerShot(now) {
 }
 
 function updateResults() {
-  resultsEl.textContent = shots
-    .map((t, i) =>
-      i === 0
-        ? `First Shot: ${t.toFixed(2)}s`
-        : `Split ${i}: ${(t - shots[i - 1]).toFixed(2)}s`
-    )
-    .join("\n");
+  if (!shots.length) {
+    resultsEl.textContent = "";
+    return;
+  }
+
+  const startIndex = totalShots - shots.length + 1;
+  const lines = shots.map((t, i) => {
+    const shotNumber = startIndex + i;
+    if (i === 0) {
+      return `Shot ${shotNumber}: ${t.toFixed(2)}s`;
+    }
+    return `Split ${shotNumber}: ${(t - shots[i - 1]).toFixed(2)}s`;
+  });
+
+  if (totalShots > shots.length) {
+    lines.unshift(`Showing last ${shots.length} shots`);
+  }
+
+  resultsEl.textContent = lines.join("\n");
 }
 
 function resetTimer() {
@@ -399,6 +418,7 @@ function resetTimer() {
   resetDetectionState();
   shots = [];
   shotCount = 0;
+  totalShots = 0;
   resultsEl.textContent = "";
   shotCountEl.textContent = "Shots: 0";
   statusEl.textContent = "Idle";
