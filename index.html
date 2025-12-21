@@ -9,7 +9,7 @@
 <body>
 
   <div class="app">
-    <div class="version">v1.0.1</div>
+    <div class="version">v1.0.2</div>
     <h1>Shot Timer</h1>
 
     <button id="sampleBtn">Record Sample Shots</button>
@@ -61,12 +61,29 @@
       <div class="indicator" id="indicatorShot">Shot</div>
     </div>
 
+    <div class="lcd-display" aria-label="Shot timer results">
+      <div class="lcd-zone lcd-top-left">
+        <span class="lcd-label">#</span>
+        <span class="lcd-value" id="shotCountValue">0</span>
+      </div>
+      <div class="lcd-zone lcd-top-right">
+        <span class="lcd-label lcd-label-right">TIME</span>
+        <span class="lcd-value" id="elapsedTimeValue">0.00</span>
+      </div>
+      <div class="lcd-zone lcd-bottom-left">
+        <span class="lcd-label">FIRST SHOT</span>
+        <span class="lcd-value" id="firstShotValue">0.00</span>
+      </div>
+      <div class="lcd-zone lcd-bottom-right">
+        <span class="lcd-label lcd-label-right">SPLIT</span>
+        <span class="lcd-value" id="splitTimeValue">0.00</span>
+      </div>
+    </div>
+
     <button id="startBtn">Start Timer</button>
     <button id="resetBtn" class="secondary">Reset</button>
 
     <div id="status">Idle</div>
-    <div id="shotCount">Shots: 0</div>
-    <pre id="results"></pre>
   </div>
 
   <script src="app.js"></script>

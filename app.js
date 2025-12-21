@@ -1,4 +1,4 @@
-const APP_VERSION = "1.2.0";
+const APP_VERSION = "1.0.2";
 
 let audioContext;
 let analyser;
@@ -33,8 +33,10 @@ const SHOT_FLASH_MS = 180;
 const MAX_SHOT_HISTORY = 60;
 
 const statusEl = document.getElementById("status");
-const resultsEl = document.getElementById("results");
-const shotCountEl = document.getElementById("shotCount");
+const shotCountValueEl = document.getElementById("shotCountValue");
+const elapsedTimeValueEl = document.getElementById("elapsedTimeValue");
+const firstShotValueEl = document.getElementById("firstShotValue");
+const splitTimeValueEl = document.getElementById("splitTimeValue");
 const sensitivityEl = document.getElementById("sensitivity");
 const waveformCanvas = document.getElementById("waveform");
 const waveformCtx = waveformCanvas.getContext("2d");
@@ -305,10 +307,9 @@ async function startTimer() {
   clearPendingTimers();
   resetDetectionState();
   shots = [];
-  resultsEl.textContent = "";
   shotCount = 0;
   totalShots = 0;
-  shotCountEl.textContent = "Shots: 0";
+  updateDisplay();
 
   statusEl.textContent = "Stand by...";
   setIndicatorState({ listening: true, beep: false, shot: false });
@@ -386,31 +387,21 @@ function registerShot(now) {
   shotCount = totalShots;
   shotDetector.lastShotTime = now;
   audioState.shotPulseUntil = now + SHOT_FLASH_MS;
-  shotCountEl.textContent = `Shots: ${shotCount}`;
-  updateResults();
+  updateDisplay();
   flashShotIndicator();
 }
 
-function updateResults() {
-  if (!shots.length) {
-    resultsEl.textContent = "";
-    return;
-  }
+function updateDisplay() {
+  const shotTotal = totalShots;
+  const lastShotTime = shots.length ? shots[shots.length - 1] : 0;
+  const firstShotTime = shots.length ? shots[0] : 0;
+  const splitTime =
+    shots.length >= 2 ? shots[shots.length - 1] - shots[shots.length - 2] : 0;
 
-  const startIndex = totalShots - shots.length + 1;
-  const lines = shots.map((t, i) => {
-    const shotNumber = startIndex + i;
-    if (i === 0) {
-      return `Shot ${shotNumber}: ${t.toFixed(2)}s`;
-    }
-    return `Split ${shotNumber}: ${(t - shots[i - 1]).toFixed(2)}s`;
-  });
-
-  if (totalShots > shots.length) {
-    lines.unshift(`Showing last ${shots.length} shots`);
-  }
-
-  resultsEl.textContent = lines.join("\n");
+  shotCountValueEl.textContent = shotTotal;
+  elapsedTimeValueEl.textContent = formatTime(lastShotTime);
+  firstShotValueEl.textContent = formatTime(firstShotTime);
+  splitTimeValueEl.textContent = formatTime(splitTime);
 }
 
 function resetTimer() {
@@ -419,8 +410,7 @@ function resetTimer() {
   shots = [];
   shotCount = 0;
   totalShots = 0;
-  resultsEl.textContent = "";
-  shotCountEl.textContent = "Shots: 0";
+  updateDisplay();
   statusEl.textContent = "Idle";
   setIndicatorState({ listening: false, beep: false, shot: false });
 }
@@ -466,6 +456,11 @@ function clampNumber(value, min, max) {
 
 function smoothValue(previous, next, factor) {
   return previous + (next - previous) * factor;
+}
+
+function formatTime(value) {
+  if (!Number.isFinite(value)) return "0.00";
+  return value.toFixed(2);
 }
 
 function getSensitivityValue() {
