@@ -304,7 +304,6 @@ function drawShotPulse(width, height) {
 }
 
 async function startTimer() {
-  await initAudio();
   clearPendingTimers();
   resetDetectionState();
   shots = [];
@@ -312,9 +311,18 @@ async function startTimer() {
   totalShots = 0;
   updateDisplay();
 
-  statusEl.textContent = "Stand by...";
+  statusEl.textContent = "Requesting microphone...";
   setIndicatorState({ listening: true, beep: false, shot: false });
 
+  try {
+    await initAudio();
+  } catch (error) {
+    statusEl.textContent = "Microphone access blocked.";
+    setIndicatorState({ listening: false, beep: false, shot: false });
+    return;
+  }
+
+  statusEl.textContent = "Stand by...";
   const delayMs = getStartDelayMs();
   delayTimeoutId = window.setTimeout(() => {
     startTime = performance.now();
