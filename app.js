@@ -1,4 +1,4 @@
-const APP_VERSION = "1.0.8";
+const APP_VERSION = "1.0.9";
 
 let audioContext;
 let analyser;
@@ -42,6 +42,14 @@ const MAX_THRESHOLD = 1;
 const CALIBRATION_SHOTS_REQUIRED = 4;
 const CALIBRATION_PEAK_WINDOW_MS = 160;
 const CALIBRATION_PEAK_BUFFER = 0.9;
+const BEEP_IGNORE_AFTER_MS = 100;
+const BEEP_FFT_WINDOW_MS = 300;
+const BEEP_FREQUENCY_MIN = 2200;
+const BEEP_FREQUENCY_MAX = 2400;
+const RECORD_DURATION_MS = 12000;
+const IMPULSE_WINDOW_SIZE = 6;
+const IMPULSE_RISE_THRESHOLD = 0.18;
+const IMPULSE_PEAK_BOOST = 0.12;
 
 const statusEl = document.getElementById("status");
 const shotCountValueEl = document.getElementById("shotCountValue");
@@ -65,9 +73,11 @@ const beepIndicator = document.getElementById("indicatorBeep");
 const shotIndicator = document.getElementById("indicatorShot");
 const shotNavUpEl = document.getElementById("shotNavUp");
 const shotNavDownEl = document.getElementById("shotNavDown");
+const recordBtn = document.getElementById("recordBtn");
 
 let activeTooltip = null;
 let activeTooltipIcon = null;
+let tooltipPositionHandler = null;
 
 const audioState = {
   rawLevel: 0,
@@ -80,6 +90,7 @@ const audioState = {
   crossingPulseUntil: 0,
   lastCrossingLevel: 0,
   shotPulseUntil: 0,
+  lastNormalizedLevel: 0,
 };
 
 const shotDetector = {
@@ -87,6 +98,17 @@ const shotDetector = {
   lastShotTime: -Infinity,
   lastBelowThresholdTime: -Infinity,
 };
+
+const recordingState = {
+  isRecording: false,
+  buffers: [],
+  length: 0,
+  processor: null,
+  gain: null,
+  stopTimeoutId: null,
+};
+
+let beepEndTime = -Infinity;
 
 let shotCooldownMs = SHOT_COOLDOWN_DEFAULT_MS;
 let minSilenceBeforeShotMs = SILENCE_RESET_DEFAULT_MS;
@@ -127,6 +149,7 @@ sensitivityEl.addEventListener("input", () => {
 document.getElementById("sampleBtn").onclick = recordSamples;
 document.getElementById("startBtn").onclick = startTimer;
 document.getElementById("resetBtn").onclick = resetTimer;
+recordBtn.addEventListener("click", startRecording);
 
 async function initAudio() {
   if (audioContext) return;
@@ -256,6 +279,9 @@ function startProcessing() {
     const levelForDetection = Math.max(rawPeak, audioState.smoothedLevel);
     const normalizedLevel = clampNumber(levelForDetection * audioState.autoGain, 0, 1);
     audioState.normalizedLevel = normalizedLevel;
+    const risingEdge = normalizedLevel - audioState.lastNormalizedLevel;
+    audioState.lastNormalizedLevel = normalizedLevel;
+    const recentAverage = calculateRecentAverage(audioState.history, IMPULSE_WINDOW_SIZE);
 
     audioState.history.push(normalizedLevel);
     if (audioState.history.length > HISTORY_LENGTH) {
@@ -265,10 +291,14 @@ function startProcessing() {
     const threshold = getThreshold();
     const now = performance.now();
     const isAbove = normalizedLevel >= threshold;
+    let beepLikeCrossing = false;
 
     if (isAbove && !audioState.isAboveThreshold) {
       audioState.crossingPulseUntil = now + CROSSING_FLASH_MS;
       audioState.lastCrossingLevel = normalizedLevel;
+      if (isBeepFilterWindowActive(now) && isBeepLikeSignal()) {
+        beepLikeCrossing = true;
+      }
     }
 
     if (!isAbove) {
@@ -283,13 +313,18 @@ function startProcessing() {
 
     const timeSinceLastShot = now - shotDetector.lastShotTime;
     const timeSinceBelowThreshold = now - shotDetector.lastBelowThresholdTime;
-    // Require both cooldown and a minimum silence window before a new shot.
     const canRegisterShot =
       shotDetector.isActive &&
       timeSinceLastShot >= shotCooldownMs &&
-      timeSinceBelowThreshold >= minSilenceBeforeShotMs;
+      now > beepEndTime + BEEP_IGNORE_AFTER_MS;
+    const silenceReady = timeSinceBelowThreshold >= minSilenceBeforeShotMs;
+    const impulseDetected = detectImpulse(normalizedLevel, threshold, risingEdge, recentAverage);
 
-    if (!audioState.isAboveThreshold && canRegisterShot) {
+    if (
+      !beepLikeCrossing &&
+      canRegisterShot &&
+      ((!audioState.isAboveThreshold && silenceReady) || impulseDetected)
+    ) {
       registerShot(now);
     }
 
@@ -436,6 +471,8 @@ async function playGoBeep(frequency = 2300) {
   const gainNode = audioContext.createGain();
   const now = audioContext.currentTime;
   const duration = 0.35;
+  const beepEndTimestamp = performance.now() + duration * 1000;
+  beepEndTime = beepEndTimestamp;
 
   oscillator.type = "sine";
   oscillator.frequency.setValueAtTime(frequency, now);
@@ -453,7 +490,88 @@ async function playGoBeep(frequency = 2300) {
   oscillator.onended = () => {
     oscillator.disconnect();
     gainNode.disconnect();
+    beepEndTime = performance.now();
   };
+}
+
+async function startRecording() {
+  try {
+    await initAudio();
+  } catch (error) {
+    statusEl.textContent = "Microphone access blocked.";
+    return;
+  }
+  if (!audioContext || recordingState.isRecording || !mic) return;
+
+  recordingState.isRecording = true;
+  recordingState.buffers = [];
+  recordingState.length = 0;
+
+  const processor = audioContext.createScriptProcessor(4096, 1, 1);
+  const gain = audioContext.createGain();
+  gain.gain.value = 0;
+
+  processor.onaudioprocess = (event) => {
+    if (!recordingState.isRecording) return;
+    const inputBuffer = event.inputBuffer.getChannelData(0);
+    recordingState.buffers.push(new Float32Array(inputBuffer));
+    recordingState.length += inputBuffer.length;
+  };
+
+  mic.connect(processor);
+  processor.connect(gain);
+  gain.connect(audioContext.destination);
+
+  recordingState.processor = processor;
+  recordingState.gain = gain;
+  recordBtn.disabled = true;
+  recordBtn.textContent = "Recording Shot Audio...";
+
+  recordingState.stopTimeoutId = window.setTimeout(() => {
+    stopRecording();
+  }, RECORD_DURATION_MS);
+}
+
+function stopRecording() {
+  if (!recordingState.isRecording) return;
+  recordingState.isRecording = false;
+
+  if (recordingState.stopTimeoutId) {
+    clearTimeout(recordingState.stopTimeoutId);
+    recordingState.stopTimeoutId = null;
+  }
+
+  if (recordingState.processor) {
+    recordingState.processor.disconnect();
+    if (mic) {
+      mic.disconnect(recordingState.processor);
+    }
+  }
+  if (recordingState.gain) {
+    recordingState.gain.disconnect();
+  }
+
+  const buffers = recordingState.buffers;
+  const length = recordingState.length;
+  recordingState.buffers = [];
+  recordingState.length = 0;
+  recordingState.processor = null;
+  recordingState.gain = null;
+
+  recordBtn.disabled = false;
+  recordBtn.textContent = "Record Shot Audio";
+
+  if (!length || !audioContext) return;
+  const wavBuffer = encodeWav(buffers, length, audioContext.sampleRate);
+  const blob = new Blob([wavBuffer], { type: "audio/wav" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `shot-audio-calibration-${formatTimestamp(new Date())}.wav`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function registerShot(now) {
@@ -502,6 +620,7 @@ function updateDisplay() {
 function resetTimer() {
   clearPendingTimers();
   resetDetectionState();
+  stopRecording();
   shots = [];
   shotCount = 0;
   totalShots = 0;
@@ -532,7 +651,9 @@ function resetDetectionState() {
   audioState.isAboveThreshold = false;
   audioState.shotPulseUntil = 0;
   audioState.crossingPulseUntil = 0;
+  audioState.lastNormalizedLevel = 0;
   startTime = 0;
+  beepEndTime = -Infinity;
 }
 
 function clearPendingTimers() {
@@ -550,6 +671,7 @@ function handlePageHidden(event) {
 function handleBackgrounded() {
   clearPendingTimers();
   resetDetectionState();
+  stopRecording();
   setIndicatorState({ listening: false, beep: false, shot: false });
   statusEl.textContent = "Idle";
   stopAudioProcessing();
@@ -569,6 +691,7 @@ function stopAudioProcessing() {
 }
 
 async function releaseAudioResources() {
+  stopRecording();
   if (micStream) {
     micStream.getTracks().forEach((track) => track.stop());
     micStream = null;
@@ -667,6 +790,28 @@ function closeInfoTooltips(event) {
   closeActiveTooltip();
 }
 
+function positionTooltip() {
+  if (!activeTooltip || !activeTooltipIcon) return;
+  const iconRect = activeTooltipIcon.getBoundingClientRect();
+  const tooltipRect = activeTooltip.getBoundingClientRect();
+  const viewportPadding = 8;
+  const scrollX = window.scrollX || window.pageXOffset;
+  const scrollY = window.scrollY || window.pageYOffset;
+  const preferredTop = iconRect.top + scrollY - tooltipRect.height - 10;
+  const placeAbove = preferredTop >= scrollY + viewportPadding;
+
+  let top = placeAbove ? preferredTop : iconRect.bottom + scrollY + 10;
+  const maxTop = scrollY + window.innerHeight - tooltipRect.height - viewportPadding;
+  top = clampNumber(top, scrollY + viewportPadding, Math.max(scrollY + viewportPadding, maxTop));
+
+  let left = iconRect.left + scrollX + iconRect.width / 2 - tooltipRect.width / 2;
+  const maxLeft = scrollX + window.innerWidth - tooltipRect.width - viewportPadding;
+  left = clampNumber(left, scrollX + viewportPadding, Math.max(scrollX + viewportPadding, maxLeft));
+
+  activeTooltip.style.top = `${top}px`;
+  activeTooltip.style.left = `${left}px`;
+}
+
 function openInfoTooltip(icon) {
   closeActiveTooltip();
   const tooltipText = icon.dataset.tooltip;
@@ -678,30 +823,13 @@ function openInfoTooltip(icon) {
   tooltip.addEventListener("click", (event) => event.stopPropagation());
   document.body.appendChild(tooltip);
 
-  const iconRect = icon.getBoundingClientRect();
-  const tooltipRect = tooltip.getBoundingClientRect();
-  const viewportPadding = 8;
-  const preferredTop = iconRect.top - tooltipRect.height - 10;
-  const placeAbove = preferredTop >= viewportPadding;
-
-  let top = placeAbove ? preferredTop : iconRect.bottom + 10;
-  if (top + tooltipRect.height > window.innerHeight - viewportPadding) {
-    top = window.innerHeight - tooltipRect.height - viewportPadding;
-  }
-  if (top < viewportPadding) {
-    top = viewportPadding;
-  }
-
-  let left = iconRect.left + iconRect.width / 2 - tooltipRect.width / 2;
-  const maxLeft = window.innerWidth - tooltipRect.width - viewportPadding;
-  left = clampNumber(left, viewportPadding, Math.max(viewportPadding, maxLeft));
-
-  tooltip.style.top = `${top}px`;
-  tooltip.style.left = `${left}px`;
-
   icon.classList.add("is-open");
   activeTooltip = tooltip;
   activeTooltipIcon = icon;
+  tooltipPositionHandler = () => positionTooltip();
+  positionTooltip();
+  window.addEventListener("scroll", tooltipPositionHandler, { passive: true });
+  window.addEventListener("resize", tooltipPositionHandler);
 }
 
 function closeActiveTooltip() {
@@ -711,8 +839,69 @@ function closeActiveTooltip() {
   if (activeTooltipIcon) {
     activeTooltipIcon.classList.remove("is-open");
   }
+  if (tooltipPositionHandler) {
+    window.removeEventListener("scroll", tooltipPositionHandler);
+    window.removeEventListener("resize", tooltipPositionHandler);
+  }
   activeTooltip = null;
   activeTooltipIcon = null;
+  tooltipPositionHandler = null;
+}
+
+function isBeepFilterWindowActive(now) {
+  return Number.isFinite(beepEndTime) && now <= beepEndTime + BEEP_FFT_WINDOW_MS;
+}
+
+function isBeepLikeSignal() {
+  if (!analyser || !audioContext) return false;
+  const freqData = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(freqData);
+
+  let sum = 0;
+  let maxValue = 0;
+  let maxIndex = 0;
+  for (let i = 0; i < freqData.length; i++) {
+    const value = freqData[i];
+    sum += value;
+    if (value > maxValue) {
+      maxValue = value;
+      maxIndex = i;
+    }
+  }
+
+  if (sum === 0) return false;
+  const dominantFrequency = (maxIndex * audioContext.sampleRate) / analyser.fftSize;
+  const dominantRatio = maxValue / sum;
+
+  let entropy = 0;
+  for (let i = 0; i < freqData.length; i++) {
+    const value = freqData[i];
+    if (!value) continue;
+    const p = value / sum;
+    entropy -= p * Math.log2(p);
+  }
+  const normalizedEntropy = entropy / Math.log2(freqData.length);
+  const isNarrowband = dominantRatio > 0.45 && normalizedEntropy < 0.55;
+  const isInBeepBand =
+    dominantFrequency >= BEEP_FREQUENCY_MIN && dominantFrequency <= BEEP_FREQUENCY_MAX;
+
+  return isInBeepBand && isNarrowband;
+}
+
+function calculateRecentAverage(history, windowSize) {
+  const count = Math.min(windowSize, history.length);
+  if (!count) return 0;
+  let sum = 0;
+  for (let i = history.length - count; i < history.length; i++) {
+    sum += history[i];
+  }
+  return sum / count;
+}
+
+function detectImpulse(level, threshold, risingEdge, recentAverage) {
+  if (level < threshold) return false;
+  const peakBoost = level - recentAverage;
+  return risingEdge >= IMPULSE_RISE_THRESHOLD && peakBoost >= IMPULSE_PEAK_BOOST;
 }
 
 function smoothValue(previous, next, factor) {
@@ -722,6 +911,54 @@ function smoothValue(previous, next, factor) {
 function formatTime(value) {
   if (!Number.isFinite(value)) return "0.00";
   return value.toFixed(2);
+}
+
+function formatTimestamp(date) {
+  const pad = (value) => String(value).padStart(2, "0");
+  const year = date.getFullYear();
+  const month = pad(date.getMonth() + 1);
+  const day = pad(date.getDate());
+  const hours = pad(date.getHours());
+  const minutes = pad(date.getMinutes());
+  const seconds = pad(date.getSeconds());
+  return `${year}${month}${day}-${hours}${minutes}${seconds}`;
+}
+
+function encodeWav(buffers, length, sampleRate) {
+  const buffer = new ArrayBuffer(44 + length * 2);
+  const view = new DataView(buffer);
+
+  const writeString = (offset, string) => {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i));
+    }
+  };
+
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + length * 2, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeString(36, "data");
+  view.setUint32(40, length * 2, true);
+
+  let offset = 44;
+  for (let i = 0; i < buffers.length; i++) {
+    const channel = buffers[i];
+    for (let j = 0; j < channel.length; j++) {
+      const sample = Math.max(-1, Math.min(1, channel[j]));
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+      offset += 2;
+    }
+  }
+
+  return buffer;
 }
 
 function getSensitivityValue() {
