@@ -1,4 +1,4 @@
-const APP_VERSION = "1.0.4";
+const APP_VERSION = "1.0.5";
 
 let audioContext;
 let analyser;
@@ -14,7 +14,12 @@ let shots = [];
 let shotCount = 0;
 let totalShots = 0;
 
-const SHOT_COOLDOWN_MS = 160;
+const SHOT_COOLDOWN_DEFAULT_MS = 160;
+const SHOT_COOLDOWN_MIN_MS = 50;
+const SHOT_COOLDOWN_MAX_MS = 500;
+const SILENCE_RESET_DEFAULT_MS = 40;
+const SILENCE_RESET_MIN_MS = 10;
+const SILENCE_RESET_MAX_MS = 200;
 const DEFAULT_DELAY_MIN = 1;
 const DEFAULT_DELAY_MAX = 4;
 const DEFAULT_FIXED_DELAY = 2;
@@ -46,6 +51,11 @@ const randomDelayEl = document.getElementById("randomDelay");
 const minDelayEl = document.getElementById("minDelay");
 const maxDelayEl = document.getElementById("maxDelay");
 const fixedDelayEl = document.getElementById("fixedDelay");
+const advancedToggleEl = document.getElementById("advancedToggle");
+const advancedPanelEl = document.getElementById("advancedPanel");
+const shotCooldownEl = document.getElementById("shotCooldown");
+const silenceResetEl = document.getElementById("silenceReset");
+const infoIcons = document.querySelectorAll(".info-icon");
 const listeningIndicator = document.getElementById("indicatorListening");
 const beepIndicator = document.getElementById("indicatorBeep");
 const shotIndicator = document.getElementById("indicatorShot");
@@ -66,7 +76,11 @@ const audioState = {
 const shotDetector = {
   isActive: false,
   lastShotTime: -Infinity,
+  lastBelowThresholdTime: -Infinity,
 };
+
+let shotCooldownMs = SHOT_COOLDOWN_DEFAULT_MS;
+let minSilenceBeforeShotMs = SILENCE_RESET_DEFAULT_MS;
 
 resizeWaveformCanvas();
 window.addEventListener("resize", resizeWaveformCanvas);
@@ -74,10 +88,17 @@ window.addEventListener("resize", resizeWaveformCanvas);
 minDelayEl.value = DEFAULT_DELAY_MIN;
 maxDelayEl.value = DEFAULT_DELAY_MAX;
 fixedDelayEl.value = DEFAULT_FIXED_DELAY;
+shotCooldownEl.value = shotCooldownMs;
+silenceResetEl.value = minSilenceBeforeShotMs;
 
 randomDelayEl.addEventListener("change", updateDelayControls);
 minDelayEl.addEventListener("input", clampDelayInputs);
 maxDelayEl.addEventListener("input", clampDelayInputs);
+advancedToggleEl.addEventListener("click", toggleAdvancedSettings);
+shotCooldownEl.addEventListener("input", updateShotCooldown);
+silenceResetEl.addEventListener("input", updateSilenceReset);
+infoIcons.forEach((icon) => icon.addEventListener("click", handleInfoToggle));
+document.addEventListener("click", closeInfoTooltips);
 
 updateDelayControls();
 
@@ -149,7 +170,7 @@ async function recordSamples() {
 
     const threshold = getThreshold();
     const isAbove = normalizedLevel >= threshold;
-    if (isAbove && !wasAboveThreshold && !peakCapture && now - lastShotTime >= SHOT_COOLDOWN_MS) {
+    if (isAbove && !wasAboveThreshold && !peakCapture && now - lastShotTime >= shotCooldownMs) {
       peakCapture = { startedAt: now, peak: normalizedLevel };
       lastShotTime = now;
     }
@@ -232,12 +253,24 @@ function startProcessing() {
     }
 
     if (!isAbove) {
+      // Track the moment audio falls below the threshold for silence timing.
+      if (audioState.isAboveThreshold) {
+        shotDetector.lastBelowThresholdTime = now;
+      }
       audioState.isAboveThreshold = false;
       processingRafId = requestAnimationFrame(process);
       return;
     }
 
-    if (shotDetector.isActive && now - shotDetector.lastShotTime >= SHOT_COOLDOWN_MS) {
+    const timeSinceLastShot = now - shotDetector.lastShotTime;
+    const timeSinceBelowThreshold = now - shotDetector.lastBelowThresholdTime;
+    // Require both cooldown and a minimum silence window before a new shot.
+    const canRegisterShot =
+      shotDetector.isActive &&
+      timeSinceLastShot >= shotCooldownMs &&
+      timeSinceBelowThreshold >= minSilenceBeforeShotMs;
+
+    if (!audioState.isAboveThreshold && canRegisterShot) {
       registerShot(now);
     }
 
@@ -444,6 +477,7 @@ function resetTimer() {
 function resetDetectionState() {
   shotDetector.isActive = false;
   shotDetector.lastShotTime = -Infinity;
+  shotDetector.lastBelowThresholdTime = performance.now();
   audioState.isAboveThreshold = false;
   audioState.shotPulseUntil = 0;
   audioState.crossingPulseUntil = 0;
@@ -474,6 +508,39 @@ function clampDelayInputs() {
 function clampNumber(value, min, max) {
   if (Number.isNaN(value)) return min;
   return Math.min(Math.max(value, min), max);
+}
+
+function toggleAdvancedSettings() {
+  const isExpanded = advancedToggleEl.getAttribute("aria-expanded") === "true";
+  advancedToggleEl.setAttribute("aria-expanded", String(!isExpanded));
+  advancedPanelEl.hidden = isExpanded;
+}
+
+function updateShotCooldown() {
+  const value = clampNumber(Number(shotCooldownEl.value), SHOT_COOLDOWN_MIN_MS, SHOT_COOLDOWN_MAX_MS);
+  shotCooldownMs = value;
+  shotCooldownEl.value = value;
+}
+
+function updateSilenceReset() {
+  const value = clampNumber(Number(silenceResetEl.value), SILENCE_RESET_MIN_MS, SILENCE_RESET_MAX_MS);
+  minSilenceBeforeShotMs = value;
+  silenceResetEl.value = value;
+}
+
+function handleInfoToggle(event) {
+  event.stopPropagation();
+  const icon = event.currentTarget;
+  const shouldOpen = !icon.classList.contains("is-open");
+  infoIcons.forEach((item) => item.classList.remove("is-open"));
+  if (shouldOpen) {
+    icon.classList.add("is-open");
+  }
+}
+
+function closeInfoTooltips(event) {
+  if (event.target.closest(".info-icon")) return;
+  infoIcons.forEach((item) => item.classList.remove("is-open"));
 }
 
 function smoothValue(previous, next, factor) {
