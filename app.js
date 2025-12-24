@@ -5,10 +5,12 @@ let analyser;
 let mic;
 let micStream;
 let dataArray;
+let silentGain;
 let processingRafId;
 let visualizationRafId;
 let delayTimeoutId;
 let shotFlashTimeoutId;
+let playbackSource;
 
 let startTime = 0;
 let shots = [];
@@ -76,6 +78,8 @@ const shotIndicator = document.getElementById("indicatorShot");
 const shotNavUpEl = document.getElementById("shotNavUp");
 const shotNavDownEl = document.getElementById("shotNavDown");
 const recordBtn = document.getElementById("recordBtn");
+const uploadTestBtn = document.getElementById("uploadTestBtn");
+const testAudioInput = document.getElementById("testAudioInput");
 
 let activeTooltip = null;
 let activeTooltipIcon = null;
@@ -154,12 +158,48 @@ document.getElementById("sampleBtn").onclick = recordSamples;
 document.getElementById("startBtn").onclick = startTimer;
 document.getElementById("resetBtn").onclick = resetTimer;
 recordBtn.addEventListener("click", startRecording);
+uploadTestBtn.addEventListener("click", () => testAudioInput.click());
+testAudioInput.addEventListener("change", handleTestAudioSelection);
+
+async function ensureAudioGraph() {
+  if (!audioContext) {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    audioContext = new AudioContextClass({ latencyHint: "interactive" });
+  }
+
+  if (!analyser) {
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 2048;
+  }
+
+  if (!dataArray && analyser) {
+    dataArray = new Uint8Array(analyser.fftSize);
+  }
+
+  if (!silentGain && audioContext) {
+    silentGain = audioContext.createGain();
+    silentGain.gain.value = 0;
+  }
+
+  if (analyser && silentGain) {
+    analyser.disconnect();
+    silentGain.disconnect();
+    analyser.connect(silentGain);
+    silentGain.connect(audioContext.destination);
+  }
+
+  if (audioContext.state === "suspended") {
+    await audioContext.resume();
+  }
+
+  startProcessing();
+  startVisualization();
+}
 
 async function initAudio() {
-  if (audioContext) return;
+  await ensureAudioGraph();
+  if (mic) return;
 
-  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-  audioContext = new AudioContextClass({ latencyHint: "interactive" });
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
       echoCancellation: false,
@@ -174,17 +214,89 @@ async function initAudio() {
   }
 
   mic = audioContext.createMediaStreamSource(stream);
-  analyser = audioContext.createAnalyser();
-  analyser.fftSize = 2048;
-
-  dataArray = new Uint8Array(analyser.fftSize);
   mic.connect(analyser);
-  const silentGain = audioContext.createGain();
-  silentGain.gain.value = 0;
-  analyser.connect(silentGain);
-  silentGain.connect(audioContext.destination);
-  startProcessing();
-  startVisualization();
+}
+
+function stopMicInput() {
+  stopRecording();
+  if (micStream) {
+    micStream.getTracks().forEach((track) => track.stop());
+    micStream = null;
+  }
+  if (mic) {
+    mic.disconnect();
+    mic = null;
+  }
+}
+
+function stopTestPlayback() {
+  if (playbackSource) {
+    playbackSource.onended = null;
+    try {
+      playbackSource.stop();
+    } catch (error) {
+      // Ignore if already stopped.
+    }
+    playbackSource.disconnect();
+    playbackSource = null;
+  }
+  shotDetector.isActive = false;
+}
+
+async function handleTestAudioSelection(event) {
+  const file = event.target.files && event.target.files[0];
+  event.target.value = "";
+  if (!file) return;
+  await startTestPlaybackFromFile(file);
+}
+
+async function startTestPlaybackFromFile(file) {
+  stopTestPlayback();
+  stopMicInput();
+  clearPendingTimers();
+  resetDetectionState();
+  shots = [];
+  shotCount = 0;
+  totalShots = 0;
+  displayedShotIndex = -1;
+  updateDisplay();
+
+  statusEl.textContent = "Decoding audio...";
+  setIndicatorState({ listening: false, beep: false, shot: false });
+
+  await ensureAudioGraph();
+
+  const arrayBuffer = await file.arrayBuffer();
+  const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+  const source = audioContext.createBufferSource();
+  source.buffer = audioBuffer;
+  source.connect(analyser);
+
+  playbackSource = source;
+
+  if (audioContext.state === "suspended") {
+    await audioContext.resume();
+  }
+
+  resetDetectionState();
+  startTime = performance.now();
+  shotDetector.isActive = true;
+  statusEl.textContent = "Testing audio...";
+  setIndicatorState({ listening: true, beep: false, shot: false });
+
+  source.start();
+  source.onended = handleTestPlaybackEnded;
+}
+
+function handleTestPlaybackEnded() {
+  shotDetector.isActive = false;
+  resetDetectionState();
+  setIndicatorState({ listening: false, beep: false, shot: false });
+  statusEl.textContent = "Idle";
+  if (playbackSource) {
+    playbackSource.disconnect();
+    playbackSource = null;
+  }
 }
 
 async function recordSamples() {
@@ -680,6 +792,7 @@ function handleBackgrounded() {
   clearPendingTimers();
   resetDetectionState();
   stopRecording();
+  stopTestPlayback();
   setIndicatorState({ listening: false, beep: false, shot: false });
   statusEl.textContent = "Idle";
   stopAudioProcessing();
@@ -700,6 +813,7 @@ function stopAudioProcessing() {
 
 async function releaseAudioResources() {
   stopRecording();
+  stopTestPlayback();
   if (micStream) {
     micStream.getTracks().forEach((track) => track.stop());
     micStream = null;
@@ -711,6 +825,10 @@ async function releaseAudioResources() {
   if (analyser) {
     analyser.disconnect();
     analyser = null;
+  }
+  if (silentGain) {
+    silentGain.disconnect();
+    silentGain = null;
   }
   dataArray = null;
   if (audioContext) {
