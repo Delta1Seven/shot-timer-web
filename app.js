@@ -1,4 +1,4 @@
-const APP_VERSION = "1.0.9";
+const APP_VERSION = "1.0.10";
 
 let audioContext;
 let analyser;
@@ -729,7 +729,9 @@ function updateDisplay() {
   const splitTime =
     displayedShotIndex >= 1 ? shots[displayedShotIndex] - shots[displayedShotIndex - 1] : 0;
 
-  shotCountValueEl.textContent = shotTotal;
+  const displayedShotNumber = displayedShotIndex >= 0 ? displayedShotIndex + 1 : shotTotal;
+
+  shotCountValueEl.textContent = displayedShotNumber;
   elapsedTimeValueEl.textContent = formatTime(lastShotTime);
   firstShotValueEl.textContent = formatTime(firstShotTime);
   splitTimeValueEl.textContent = formatTime(splitTime);
