@@ -50,6 +50,8 @@ const RECORD_DURATION_MS = 12000;
 const IMPULSE_WINDOW_SIZE = 6;
 const IMPULSE_RISE_THRESHOLD = 0.18;
 const IMPULSE_PEAK_BOOST = 0.12;
+const ECHO_REJECT_MS = 45;
+const FAST_SPLIT_MIN_MS = 120;
 
 const statusEl = document.getElementById("status");
 const shotCountValueEl = document.getElementById("shotCountValue");
@@ -98,6 +100,8 @@ const shotDetector = {
   lastShotTime: -Infinity,
   lastBelowThresholdTime: -Infinity,
 };
+
+let lastRegisteredImpulseAt = -Infinity;
 
 const recordingState = {
   isRecording: false,
@@ -319,12 +323,15 @@ function startProcessing() {
       now > beepEndTime + BEEP_IGNORE_AFTER_MS;
     const silenceReady = timeSinceBelowThreshold >= minSilenceBeforeShotMs;
     const impulseDetected = detectImpulse(normalizedLevel, threshold, risingEdge, recentAverage);
+    const timeSinceLastImpulse = now - lastRegisteredImpulseAt;
+    const pastEchoReject = timeSinceLastImpulse >= ECHO_REJECT_MS;
+    const pastFastSplitMin = now - shotDetector.lastShotTime >= FAST_SPLIT_MIN_MS;
+    const impulseOk = impulseDetected && pastEchoReject;
+    const silenceOk = !audioState.isAboveThreshold && silenceReady;
+    const allowByImpulse = impulseOk && (pastFastSplitMin || silenceOk);
 
-    if (
-      !beepLikeCrossing &&
-      canRegisterShot &&
-      ((!audioState.isAboveThreshold && silenceReady) || impulseDetected)
-    ) {
+    if (!beepLikeCrossing && canRegisterShot && (silenceOk || allowByImpulse)) {
+      lastRegisteredImpulseAt = now;
       registerShot(now);
     }
 
@@ -648,6 +655,7 @@ function resetDetectionState() {
   shotDetector.isActive = false;
   shotDetector.lastShotTime = -Infinity;
   shotDetector.lastBelowThresholdTime = performance.now();
+  lastRegisteredImpulseAt = -Infinity;
   audioState.isAboveThreshold = false;
   audioState.shotPulseUntil = 0;
   audioState.crossingPulseUntil = 0;
