@@ -145,8 +145,8 @@ document.addEventListener("click", closeInfoTooltips);
 document.addEventListener("visibilitychange", handlePageHidden);
 window.addEventListener("pagehide", handlePageHidden);
 
-shotNavUpEl.addEventListener("click", () => navigateShots(-1));
-shotNavDownEl.addEventListener("click", () => navigateShots(1));
+shotNavUpEl.addEventListener("click", () => navigateShots(1));
+shotNavDownEl.addEventListener("click", () => navigateShots(-1));
 
 updateDelayControls();
 
@@ -761,8 +761,8 @@ function navigateShots(direction) {
 
 function updateShotNavControls() {
   const hasShots = shots.length > 0;
-  shotNavUpEl.disabled = !hasShots || displayedShotIndex <= 0;
-  shotNavDownEl.disabled = !hasShots || displayedShotIndex >= shots.length - 1;
+  shotNavUpEl.disabled = !hasShots || displayedShotIndex >= shots.length - 1;
+  shotNavDownEl.disabled = !hasShots || displayedShotIndex <= 0;
 }
 
 function resetDetectionState() {
