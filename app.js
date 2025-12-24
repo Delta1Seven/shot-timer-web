@@ -1,4 +1,4 @@
-const APP_VERSION = "1.0.10";
+const APP_VERSION = "1.0.11";
 
 let audioContext;
 let analyser;
@@ -77,6 +77,7 @@ const beepIndicator = document.getElementById("indicatorBeep");
 const shotIndicator = document.getElementById("indicatorShot");
 const shotNavUpEl = document.getElementById("shotNavUp");
 const shotNavDownEl = document.getElementById("shotNavDown");
+const versionDisplayEl = document.querySelector(".version");
 const recordBtn = document.getElementById("recordBtn");
 const uploadTestBtn = document.getElementById("uploadTestBtn");
 const testAudioInput = document.getElementById("testAudioInput");
@@ -145,8 +146,12 @@ document.addEventListener("click", closeInfoTooltips);
 document.addEventListener("visibilitychange", handlePageHidden);
 window.addEventListener("pagehide", handlePageHidden);
 
-shotNavUpEl.addEventListener("click", () => navigateShots(1));
-shotNavDownEl.addEventListener("click", () => navigateShots(-1));
+shotNavUpEl.addEventListener("click", showNextShot);
+shotNavDownEl.addEventListener("click", showPreviousShot);
+
+if (versionDisplayEl) {
+  versionDisplayEl.textContent = `v${APP_VERSION}`;
+}
 
 updateDelayControls();
 
@@ -757,6 +762,14 @@ function navigateShots(direction) {
   if (nextIndex === displayedShotIndex) return;
   displayedShotIndex = nextIndex;
   updateDisplay();
+}
+
+function showPreviousShot() {
+  navigateShots(-1);
+}
+
+function showNextShot() {
+  navigateShots(1);
 }
 
 function updateShotNavControls() {
